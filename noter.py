@@ -184,7 +184,7 @@ class DatabaseManager:
 class CustomDialog(tk.Toplevel):
     def __init__(self, parent, title, width=350, height=160):
         super().__init__(parent)
-        self.withdraw() # <--- FIXED: Hide window initially to prevent "flash"
+        self.withdraw()
         self.title(title)
         self.geometry(f"{width}x{height}")
         try: self.iconbitmap("icon.ico")
@@ -193,13 +193,11 @@ class CustomDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
-        
-        # Position the window
         self.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (width // 2)
         y = parent.winfo_y() + (parent.winfo_height() // 2) - (height // 2)
         self.geometry(f"+{x}+{y}")
-        self.deiconify() # <--- FIXED: Show window only after it is ready
+        self.deiconify()
 
 class CustomMessageDialog(CustomDialog):
     def __init__(self, parent, title, message, is_error=False):
@@ -404,6 +402,10 @@ class NoteApp(tk.Tk):
         for w in [row, info_frame, l_name, l_desc, meta_frame]: w.bind("<Button-1>", try_open)
 
     def confirm_delete_project(self, pid):
+        pwd = self.db.get_project_password(pid)
+        if pwd:
+            inp = ask_string(self, "Password Required", "Enter password to delete:", show='*')
+            if inp != pwd: return show_msg(self, "Error", "Incorrect password.", True)
         if ask_yes_no(self, "Delete Notebook", "Are you sure? This will delete all notes and tasks inside."):
             self.db.delete_project(pid)
             self.refresh_project_list()
@@ -462,7 +464,7 @@ class NoteApp(tk.Tk):
         self.e_editor_search.bind("<Down>", lambda e: self.navigate_search("next"))
         self.e_editor_search.bind("<Up>", lambda e: self.navigate_search("prev"))
         
-        # FIX: Separate widget creation from binding
+        # --- FIX: Label Creation & Binding on separate lines ---
         lbl_clear = tk.Label(search_frame, text="✕", bg="#eee", fg="#999", cursor="hand2")
         lbl_clear.pack(side="left", padx=(2, 5))
         lbl_clear.bind("<Button-1>", self.clear_search)
