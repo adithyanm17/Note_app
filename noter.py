@@ -1,10 +1,19 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, font
+from tkinter import ttk, messagebox, font, filedialog
 import sqlite3
 import os
 import sys
 import re
 from datetime import datetime
+
+# --- Optional PDF Support ---
+try:
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.utils import simpleSplit
+    HAS_PDF_SUPPORT = True
+except ImportError:
+    HAS_PDF_SUPPORT = False
 
 APP_NAME = "Note"
 DB_NAME = "noteapp.db"
@@ -30,6 +39,7 @@ class DatabaseManager:
         self.conn = sqlite3.connect(self.db_path)
         self.cursor = self.conn.cursor()
         self._init_db()
+        self._migrate_db() # Check for updates to schema
 
     def _get_app_data_path(self):
         if sys.platform == "win32":
@@ -62,17 +72,27 @@ class DatabaseManager:
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             )
         """)
+        # Updated table definition for new installs
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS todos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id INTEGER,
                 task TEXT,
+                due_date TEXT,
                 is_done INTEGER DEFAULT 0,
                 created_at TEXT,
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             )
         """)
         self.conn.commit()
+
+    def _migrate_db(self):
+        """Automatically adds columns to existing databases if missing."""
+        try:
+            self.cursor.execute("ALTER TABLE todos ADD COLUMN due_date TEXT")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass # Column already exists
 
     def add_project(self, name, description):
         self.cursor.execute("INSERT INTO projects (name, description, created_at) VALUES (?, ?, ?)",
@@ -112,7 +132,6 @@ class DatabaseManager:
             self.cursor.execute("SELECT id, project_id, title, timestamp FROM notes WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
         return self.cursor.fetchall()
 
-    # NEW: Fetch single note content specifically
     def get_note_content(self, note_id):
         self.cursor.execute("SELECT content FROM notes WHERE id = ?", (note_id,))
         result = self.cursor.fetchone()
@@ -122,12 +141,14 @@ class DatabaseManager:
         self.cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
         self.conn.commit()
 
-    def add_todo(self, project_id, task):
-        self.cursor.execute("INSERT INTO todos (project_id, task, created_at) VALUES (?, ?, ?)",
-                            (project_id, task, datetime.now().strftime("%Y-%m-%d")))
+    # --- UPDATED TODO METHODS ---
+    def add_todo(self, project_id, task, due_date=""):
+        self.cursor.execute("INSERT INTO todos (project_id, task, due_date, created_at) VALUES (?, ?, ?, ?)",
+                            (project_id, task, due_date, datetime.now().strftime("%Y-%m-%d")))
         self.conn.commit()
 
     def get_todos(self, project_id):
+        # We now fetch due_date as well
         self.cursor.execute("SELECT * FROM todos WHERE project_id = ? ORDER BY is_done ASC, id DESC", (project_id,))
         return self.cursor.fetchall()
 
@@ -339,10 +360,8 @@ class NoteApp(tk.Tk):
         ttk.Button(fmt_frame, text="B", width=2, style="Tool.TButton", command=lambda: self.toggle_format("bold")).pack(side="left", padx=1)
         ttk.Button(fmt_frame, text="I", width=2, style="Tool.TButton", command=lambda: self.toggle_format("italic")).pack(side="left", padx=1)
         ttk.Button(fmt_frame, text="U", width=2, style="Tool.TButton", command=lambda: self.toggle_format("underline")).pack(side="left", padx=1)
-        
         self.btn_bullet = ttk.Button(fmt_frame, text="•", width=2, style="Tool.TButton", command=lambda: self.insert_smart_list("bullet"))
         self.btn_bullet.pack(side="left", padx=1)
-        
         self.btn_number = ttk.Button(fmt_frame, text="1.", width=2, style="Tool.TButton", command=lambda: self.insert_smart_list("number"))
         self.btn_number.pack(side="left", padx=1)
 
@@ -351,7 +370,7 @@ class NoteApp(tk.Tk):
         search_frame.pack(side="left", padx=10)
         self.editor_search_var = tk.StringVar()
         self.editor_search_var.trace("w", self.on_search_type)
-        self.e_editor_search = ttk.Entry(search_frame, textvariable=self.editor_search_var, width=20)
+        self.e_editor_search = ttk.Entry(search_frame, textvariable=self.editor_search_var, width=15)
         self.e_editor_search.pack(side="left")
         self.e_editor_search.bind("<Return>", lambda e: self.navigate_search("next"))
         self.e_editor_search.bind("<Down>", lambda e: self.navigate_search("next"))
@@ -360,13 +379,18 @@ class NoteApp(tk.Tk):
         lbl_clear = tk.Label(search_frame, text="✕", bg="#eee", fg="#999", cursor="hand2")
         lbl_clear.pack(side="left", padx=(2, 5))
         lbl_clear.bind("<Button-1>", self.clear_search)
-        
         self.lbl_search_count = tk.Label(search_frame, text="", bg="#eee", fg=COLORS["fg_sub"], font=("Segoe UI", 9))
         self.lbl_search_count.pack(side="left")
 
-        # Delete Note
-        self.btn_del_note = ttk.Button(self.editor_toolbar, text="Delete Note", style="Delete.TButton", command=self.delete_current_note)
-        self.btn_del_note.pack(side="right", padx=5)
+        # Right Side Tools (Export + Delete)
+        right_tool_frame = tk.Frame(self.editor_toolbar, bg="#eee")
+        right_tool_frame.pack(side="right")
+
+        # NEW: Export Button
+        ttk.Button(right_tool_frame, text="Export", style="Tool.TButton", command=self.export_note).pack(side="left", padx=5)
+
+        self.btn_del_note = ttk.Button(right_tool_frame, text="Delete Note", style="Delete.TButton", command=self.delete_current_note)
+        self.btn_del_note.pack(side="left", padx=5)
 
         # Text Area
         self.editor_text = tk.Text(pane_editor, font=self.default_font, wrap="word", 
@@ -384,16 +408,29 @@ class NoteApp(tk.Tk):
 
         # --- PANE 3: TO-DO ---
         pane_todo = tk.Frame(paned, bg=COLORS["bg_main"])
-        paned.add(pane_todo, width=260)
+        paned.add(pane_todo, width=280) # Increased width for date
         t_head = tk.Frame(pane_todo, bg=COLORS["bg_sec"], pady=8, padx=10)
         t_head.pack(fill="x")
         tk.Label(t_head, text="Project Tasks", font=("Segoe UI", 10, "bold"), bg=COLORS["bg_sec"], fg=COLORS["fg_text"]).pack(anchor="w")
+        
+        # Add Task Input
         t_input = tk.Frame(pane_todo, bg=COLORS["bg_main"], pady=5)
         t_input.pack(fill="x")
+        
         self.e_task = ttk.Entry(t_input)
-        self.e_task.pack(side="left", fill="x", expand=True)
+        self.e_task.pack(side="left", fill="x", expand=True, padx=(5,0))
+        
+        # NEW: Date Entry
+        self.e_date = ttk.Entry(t_input, width=11, justify="center")
+        self.e_date.insert(0, "YYYY-MM-DD")
+        self.e_date.bind("<FocusIn>", lambda e: self.e_date.delete(0, "end") if "Y" in self.e_date.get() else None)
+        self.e_date.pack(side="left", padx=5)
+
         self.e_task.bind("<Return>", lambda e: self.add_task())
-        ttk.Button(t_input, text="Add", width=4, command=self.add_task).pack(side="right", padx=(5,0))
+        self.e_date.bind("<Return>", lambda e: self.add_task())
+
+        ttk.Button(t_input, text="Add", width=4, command=self.add_task).pack(side="right", padx=(0,5))
+        
         self.todo_scroll = ScrollableFrame(pane_todo, bg_color=COLORS["bg_main"])
         self.todo_scroll.pack(fill="both", expand=True)
 
@@ -403,13 +440,11 @@ class NoteApp(tk.Tk):
     # --- Note Logic ---
     def refresh_notes_list(self):
         for w in self.note_scroll.scrollable_frame.winfo_children(): w.destroy()
-        # Optimized fetch: DB now returns (id, project_id, title, timestamp) only
         notes = self.db.get_notes(self.current_project, self.note_search_var.get())
         for nid, pid, title, ts in notes:
             item = tk.Frame(self.note_scroll.scrollable_frame, bg=COLORS["white"], bd=1, relief="solid")
             item.pack(fill="x", pady=2, padx=2)
             
-            # FIXED: We DO NOT pass content here anymore. We only pass the ID.
             def select_wrapper(e, n=nid): 
                 self.auto_save_current()
                 self.load_editor(n)
@@ -424,10 +459,7 @@ class NoteApp(tk.Tk):
 
     def load_editor(self, nid, content=None):
         self.current_note_id = nid
-        
-        # FIXED: Always fetch fresh content from DB
         fresh_content = self.db.get_note_content(nid)
-        
         self.clear_search(None)
         self.editor_toolbar.pack(side="top", fill="x")
         self.editor_text.pack(fill="both", expand=True)
@@ -439,7 +471,7 @@ class NoteApp(tk.Tk):
         self.auto_save_current()
         nid = self.db.add_note(self.current_project)
         self.refresh_notes_list()
-        self.load_editor(nid) # No content passed, load_editor will fetch it
+        self.load_editor(nid) 
 
     def auto_save_current(self):
         if self.current_note_id:
@@ -454,6 +486,52 @@ class NoteApp(tk.Tk):
             self.editor_toolbar.pack_forget()
             self.editor_text.pack_forget()
             self.refresh_notes_list()
+
+    # --- NEW: Export Logic ---
+    def export_note(self):
+        if not self.current_note_id: return
+
+        content = self.editor_text.get("1.0", "end-1c")
+        # Extract title from first line
+        title = content.split('\n')[0][:50] if content else "note"
+        safe_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).strip()
+        
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            initialfile=safe_title,
+            filetypes=[("Text File", "*.txt"), ("PDF Document", "*.pdf")]
+        )
+        
+        if not file_path: return
+
+        try:
+            if file_path.endswith(".pdf"):
+                if not HAS_PDF_SUPPORT:
+                    messagebox.showerror("Error", "PDF export requires 'reportlab'.\nRun: pip install reportlab")
+                    return
+                self._create_pdf(file_path, content)
+            else:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            messagebox.showinfo("Export", "Note exported successfully!")
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e))
+
+    def _create_pdf(self, path, content):
+        c = canvas.Canvas(path, pagesize=letter)
+        width, height = letter
+        text_object = c.beginText(40, height - 40)
+        text_object.setFont("Helvetica", 12)
+        
+        lines = content.split('\n')
+        for line in lines:
+            # Simple text wrapping
+            wrapped_lines = simpleSplit(line, "Helvetica", 12, width - 80)
+            for wrapped in wrapped_lines:
+                text_object.textLine(wrapped)
+        
+        c.drawText(text_object)
+        c.save()
 
     # --- Text Activity Handler ---
     def on_text_activity(self, event):
@@ -588,15 +666,20 @@ class NoteApp(tk.Tk):
     # --- Todo Logic ---
     def add_task(self):
         task = self.e_task.get().strip()
+        date = self.e_date.get().strip()
+        if "Y" in date: date = "" # Handle placeholder
+
         if task:
-            self.db.add_todo(self.current_project, task)
+            self.db.add_todo(self.current_project, task, date)
             self.e_task.delete(0, "end")
             self.refresh_todo_list()
 
     def refresh_todo_list(self):
         for w in self.todo_scroll.scrollable_frame.winfo_children(): w.destroy()
+        # Returns: id, project_id, task, due_date, is_done, created_at
         todos = self.db.get_todos(self.current_project)
-        for tid, pid, task, is_done, _ in todos:
+        
+        for tid, pid, task, date, is_done, _ in todos:
             row = tk.Frame(self.todo_scroll.scrollable_frame, bg=COLORS["white"], pady=2)
             row.pack(fill="x", pady=2)
             var = tk.BooleanVar(value=is_done)
@@ -606,8 +689,14 @@ class NoteApp(tk.Tk):
             cb = tk.Checkbutton(row, variable=var, command=toggle, bg=COLORS["white"], activebackground=COLORS["white"])
             cb.pack(side="left")
             fg_col = "#aaa" if is_done else COLORS["fg_text"]
-            lbl = tk.Label(row, text=task, bg=COLORS["white"], fg=fg_col, wraplength=180, justify="left", anchor="w")
+            lbl = tk.Label(row, text=task, bg=COLORS["white"], fg=fg_col, wraplength=140, justify="left", anchor="w")
             lbl.pack(side="left", fill="x", expand=True)
+            
+            # Show Date if exists
+            if date:
+                l_date = tk.Label(row, text=date, bg=COLORS["white"], fg=COLORS["accent"], font=("Segoe UI", 8))
+                l_date.pack(side="left", padx=5)
+
             btn_del = tk.Label(row, text="✕", fg="#aaa", bg=COLORS["white"], cursor="hand2")
             btn_del.pack(side="right", padx=5)
             btn_del.bind("<Button-1>", lambda e, t=tid: self.delete_task(t))
