@@ -1,16 +1,20 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, font, filedialog
+from tkinter import ttk, messagebox, font, filedialog, simpledialog
 import sqlite3
 import os
 import sys
 import re
+import calendar
 from datetime import datetime
 
 # --- Optional PDF Support ---
 try:
-    from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import letter
-    from reportlab.lib.utils import simpleSplit
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_JUSTIFY, TA_CENTER
+    from reportlab.lib.units import inch
+    from reportlab.pdfgen import canvas
     HAS_PDF_SUPPORT = True
 except ImportError:
     HAS_PDF_SUPPORT = False
@@ -39,7 +43,7 @@ class DatabaseManager:
         self.conn = sqlite3.connect(self.db_path)
         self.cursor = self.conn.cursor()
         self._init_db()
-        self._migrate_db() # Check for updates to schema
+        self._migrate_db()
 
     def _get_app_data_path(self):
         if sys.platform == "win32":
@@ -59,7 +63,8 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 description TEXT,
-                created_at TEXT
+                created_at TEXT,
+                password TEXT
             )
         """)
         self.cursor.execute("""
@@ -72,7 +77,6 @@ class DatabaseManager:
                 FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
             )
         """)
-        # Updated table definition for new installs
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS todos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,13 +91,18 @@ class DatabaseManager:
         self.conn.commit()
 
     def _migrate_db(self):
-        """Automatically adds columns to existing databases if missing."""
+        """Adds columns to existing databases if missing."""
         try:
             self.cursor.execute("ALTER TABLE todos ADD COLUMN due_date TEXT")
             self.conn.commit()
-        except sqlite3.OperationalError:
-            pass # Column already exists
+        except sqlite3.OperationalError: pass
+        
+        try:
+            self.cursor.execute("ALTER TABLE projects ADD COLUMN password TEXT")
+            self.conn.commit()
+        except sqlite3.OperationalError: pass
 
+    # --- Project Ops ---
     def add_project(self, name, description):
         self.cursor.execute("INSERT INTO projects (name, description, created_at) VALUES (?, ?, ?)",
                             (name, description, datetime.now().strftime("%Y-%m-%d %H:%M")))
@@ -111,6 +120,16 @@ class DatabaseManager:
         self.cursor.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         self.conn.commit()
 
+    def set_project_password(self, project_id, password):
+        self.cursor.execute("UPDATE projects SET password = ? WHERE id = ?", (password, project_id))
+        self.conn.commit()
+
+    def get_project_password(self, project_id):
+        self.cursor.execute("SELECT password FROM projects WHERE id = ?", (project_id,))
+        res = self.cursor.fetchone()
+        return res[0] if res else None
+
+    # --- Note Ops ---
     def add_note(self, project_id, content="New Note"):
         title = content.split('\n')[0][:30] if content else "Untitled"
         self.cursor.execute("INSERT INTO notes (project_id, title, content, timestamp) VALUES (?, ?, ?, ?)",
@@ -136,20 +155,27 @@ class DatabaseManager:
         self.cursor.execute("SELECT content FROM notes WHERE id = ?", (note_id,))
         result = self.cursor.fetchone()
         return result[0] if result else ""
+    
+    def get_all_notes_content(self, project_id):
+        self.cursor.execute("SELECT title, content FROM notes WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
+        return self.cursor.fetchall()
 
     def delete_note(self, note_id):
         self.cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
         self.conn.commit()
 
-    # --- UPDATED TODO METHODS ---
+    # --- Todo Ops ---
     def add_todo(self, project_id, task, due_date=""):
         self.cursor.execute("INSERT INTO todos (project_id, task, due_date, created_at) VALUES (?, ?, ?, ?)",
                             (project_id, task, due_date, datetime.now().strftime("%Y-%m-%d")))
         self.conn.commit()
 
     def get_todos(self, project_id):
-        # We now fetch due_date as well
-        self.cursor.execute("SELECT * FROM todos WHERE project_id = ? ORDER BY is_done ASC, id DESC", (project_id,))
+        # Explicitly select columns to avoid ordering issues with migrated databases
+        self.cursor.execute("""
+            SELECT id, project_id, task, due_date, is_done, created_at 
+            FROM todos WHERE project_id = ? ORDER BY is_done ASC, id DESC
+        """, (project_id,))
         return self.cursor.fetchall()
 
     def toggle_todo(self, todo_id, is_done):
@@ -161,20 +187,82 @@ class DatabaseManager:
         self.cursor.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
         self.conn.commit()
 
+# --- Calendar Dialog Class ---
+class CalendarDialog(tk.Toplevel):
+    def __init__(self, parent, callback):
+        super().__init__(parent)
+        self.callback = callback
+        self.title("Select Date")
+        self.geometry("250x250")
+        self.iconbitmap("icon.ico")
+        self.configure(bg=COLORS["bg_main"])
+        self.resizable(False, False)
+        
+        self.year = datetime.now().year
+        self.month = datetime.now().month
+        
+        self._setup_ui()
+        self._update_calendar()
+
+    def _setup_ui(self):
+        header = tk.Frame(self, bg=COLORS["bg_sec"])
+        header.pack(fill="x", pady=5)
+        
+        tk.Button(header, text="<", command=self._prev_month, bg=COLORS["bg_main"], relief="flat").pack(side="left", padx=5)
+        self.lbl_month = tk.Label(header, text="", bg=COLORS["bg_sec"], font=("Segoe UI", 10, "bold"))
+        self.lbl_month.pack(side="left", expand=True)
+        tk.Button(header, text=">", command=self._next_month, bg=COLORS["bg_main"], relief="flat").pack(side="right", padx=5)
+        
+        self.cal_frame = tk.Frame(self, bg=COLORS["bg_main"])
+        self.cal_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+    def _update_calendar(self):
+        for widget in self.cal_frame.winfo_children():
+            widget.destroy()
+            
+        self.lbl_month.config(text=f"{calendar.month_name[self.month]} {self.year}")
+        
+        # Days Header
+        days = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+        for i, day in enumerate(days):
+            tk.Label(self.cal_frame, text=day, bg=COLORS["bg_main"], fg=COLORS["accent"], font=("Segoe UI", 8, "bold")).grid(row=0, column=i)
+            
+        # Days Grid
+        cal = calendar.monthcalendar(self.year, self.month)
+        for r, week in enumerate(cal):
+            for c, day in enumerate(week):
+                if day != 0:
+                    btn = tk.Button(self.cal_frame, text=str(day), width=3, relief="flat", bg=COLORS["white"],
+                                    command=lambda d=day: self._select_date(d))
+                    btn.grid(row=r+1, column=c, padx=1, pady=1)
+
+    def _prev_month(self):
+        self.month -= 1
+        if self.month == 0:
+            self.month = 12
+            self.year -= 1
+        self._update_calendar()
+
+    def _next_month(self):
+        self.month += 1
+        if self.month == 13:
+            self.month = 1
+            self.year += 1
+        self._update_calendar()
+
+    def _select_date(self, day):
+        date_str = f"{day:02d}-{self.month:02d}-{self.year}"
+        self.callback(date_str)
+        self.destroy()
+
 # --- Helper: Smart Scrollable Frame ---
 class ScrollableFrame(ttk.Frame):
     def __init__(self, container, bg_color=COLORS["bg_main"], *args, **kwargs):
         super().__init__(container, *args, **kwargs)
-        
         self.canvas = tk.Canvas(self, bg=bg_color, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.scrollable_frame = ttk.Frame(self.canvas, style="Card.TFrame")
-
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        )
-
+        self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas.bind('<Configure>', self._configure_window_width)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
@@ -209,7 +297,6 @@ class NoteApp(tk.Tk):
         self.db = DatabaseManager()
         self.current_project = None
         self.current_note_id = None
-        
         self.search_matches = [] 
         self.current_match_index = -1
         
@@ -220,7 +307,6 @@ class NoteApp(tk.Tk):
     def _setup_styles(self):
         style = ttk.Style()
         style.theme_use('clam')
-        
         self.default_font = font.Font(family="Segoe UI", size=10)
         self.bold_font = font.Font(family="Segoe UI", size=10, weight="bold")
         self.italic_font = font.Font(family="Segoe UI", size=10, slant="italic")
@@ -234,10 +320,8 @@ class NoteApp(tk.Tk):
         style.configure("Sub.TLabel", font=("Segoe UI", 9), foreground=COLORS["fg_sub"], background=COLORS["bg_main"])
         style.configure("TButton", font=("Segoe UI", 9, "bold"), background=COLORS["bg_sec"], foreground=COLORS["fg_text"], borderwidth=1)
         style.map("TButton", background=[("active", COLORS["bg_hover"])])
-        
         style.configure("Tool.TButton", font=("Segoe UI", 9), padding=2, background=COLORS["bg_sec"])
         style.map("Tool.TButton", background=[("active", COLORS["bg_active"]), ("pressed", COLORS["bg_active"])])
-        
         style.configure("Delete.TButton", font=("Segoe UI", 8), background=COLORS["bg_main"], foreground="#A00", borderwidth=0)
         style.map("Delete.TButton", background=[("active", "#FFE0E0")])
         style.configure("TEntry", fieldbackground=COLORS["white"], bordercolor=COLORS["bg_sec"])
@@ -287,16 +371,30 @@ class NoteApp(tk.Tk):
         projects = self.db.get_projects(self.proj_search_var.get())
         if not projects:
             ttk.Label(self.proj_scroll.scrollable_frame, text="No notebooks found.", padding=20).pack()
-        for pid, name, desc, created in projects:
-            self.create_project_row(pid, name, desc, created)
+        for row in projects:
+            self.create_project_row(row)
 
-    def create_project_row(self, pid, name, desc, created):
+    def create_project_row(self, row_data):
+        pid, name, desc, created, password = row_data
+        
         row = tk.Frame(self.proj_scroll.scrollable_frame, bg=COLORS["white"], pady=12, padx=10, bd=1, relief="solid")
         row.pack(fill="x", pady=5)
         
+        def try_open(e, p=pid, n=name, pwd=password):
+            if pwd:
+                inp = simpledialog.askstring("Password Required", f"Enter password for '{n}':", show='*')
+                if inp == pwd:
+                    self.open_project_detail(p, n)
+                elif inp is not None:
+                    messagebox.showerror("Error", "Incorrect password.")
+            else:
+                self.open_project_detail(p, n)
+
         info_frame = tk.Frame(row, bg=COLORS["white"])
         info_frame.pack(side="left", fill="both", expand=True)
-        l_name = tk.Label(info_frame, text=name, font=("Segoe UI", 12, "bold"), fg=COLORS["fg_text"], bg=COLORS["white"], width=30, anchor="w")
+        
+        name_text = f"🔒 {name}" if password else name
+        l_name = tk.Label(info_frame, text=name_text, font=("Segoe UI", 12, "bold"), fg=COLORS["fg_text"], bg=COLORS["white"], width=30, anchor="w")
         l_name.pack(side="left")
         l_desc = tk.Label(info_frame, text=desc, font=("Segoe UI", 10), fg=COLORS["fg_sub"], bg=COLORS["white"], anchor="w")
         l_desc.pack(side="left", fill="x", padx=20)
@@ -309,7 +407,7 @@ class NoteApp(tk.Tk):
         btn_del.pack(side="right", padx=5)
 
         for w in [row, info_frame, l_name, l_desc, meta_frame, l_time]:
-            w.bind("<Button-1>", lambda e: self.open_project_detail(pid, name))
+            w.bind("<Button-1>", try_open)
 
     def confirm_delete_project(self, pid):
         if messagebox.askyesno("Delete Notebook", "Are you sure? This will delete all notes and tasks inside."):
@@ -328,7 +426,20 @@ class NoteApp(tk.Tk):
         header.pack(fill="x")
         btn_back = ttk.Button(header, text="← Back", command=self.show_projects_view, width=8)
         btn_back.pack(side="left", padx=(0, 20))
+        
         ttk.Label(header, text=name, style="Header.TLabel").pack(side="left")
+
+        tools_frame = ttk.Frame(header)
+        tools_frame.pack(side="right")
+
+        ttk.Button(tools_frame, text="Export PDF", style="Tool.TButton", command=self.open_export_dialog).pack(side="left", padx=5)
+        
+        has_pass = self.db.get_project_password(pid)
+        if has_pass:
+            ttk.Button(tools_frame, text="Change Password", style="Tool.TButton", command=self.change_password_dialog).pack(side="left", padx=5)
+            ttk.Button(tools_frame, text="Remove Lock", style="Tool.TButton", command=self.remove_password_dialog).pack(side="left", padx=5)
+        else:
+            ttk.Button(tools_frame, text="Set Password", style="Tool.TButton", command=self.set_password_dialog).pack(side="left", padx=5)
 
         paned = tk.PanedWindow(self.container, orient=tk.HORIZONTAL, bg=COLORS["bg_sec"], sashwidth=4)
         paned.pack(fill="both", expand=True, padx=20, pady=(10, 20))
@@ -351,10 +462,8 @@ class NoteApp(tk.Tk):
         pane_editor = tk.Frame(paned, bg=COLORS["white"])
         paned.add(pane_editor, width=500)
         
-        # Editor Toolbar
         self.editor_toolbar = tk.Frame(pane_editor, bg="#eee", pady=5, padx=5)
         
-        # Formatting
         fmt_frame = tk.Frame(self.editor_toolbar, bg="#eee")
         fmt_frame.pack(side="left", padx=(0, 10))
         ttk.Button(fmt_frame, text="B", width=2, style="Tool.TButton", command=lambda: self.toggle_format("bold")).pack(side="left", padx=1)
@@ -365,7 +474,6 @@ class NoteApp(tk.Tk):
         self.btn_number = ttk.Button(fmt_frame, text="1.", width=2, style="Tool.TButton", command=lambda: self.insert_smart_list("number"))
         self.btn_number.pack(side="left", padx=1)
 
-        # Search Box
         search_frame = tk.Frame(self.editor_toolbar, bg="#eee")
         search_frame.pack(side="left", padx=10)
         self.editor_search_var = tk.StringVar()
@@ -382,17 +490,9 @@ class NoteApp(tk.Tk):
         self.lbl_search_count = tk.Label(search_frame, text="", bg="#eee", fg=COLORS["fg_sub"], font=("Segoe UI", 9))
         self.lbl_search_count.pack(side="left")
 
-        # Right Side Tools (Export + Delete)
-        right_tool_frame = tk.Frame(self.editor_toolbar, bg="#eee")
-        right_tool_frame.pack(side="right")
+        self.btn_del_note = ttk.Button(self.editor_toolbar, text="Delete Note", style="Delete.TButton", command=self.delete_current_note)
+        self.btn_del_note.pack(side="right", padx=5)
 
-        # NEW: Export Button
-        ttk.Button(right_tool_frame, text="Export", style="Tool.TButton", command=self.export_note).pack(side="left", padx=5)
-
-        self.btn_del_note = ttk.Button(right_tool_frame, text="Delete Note", style="Delete.TButton", command=self.delete_current_note)
-        self.btn_del_note.pack(side="left", padx=5)
-
-        # Text Area
         self.editor_text = tk.Text(pane_editor, font=self.default_font, wrap="word", 
                                    bd=0, padx=20, pady=20, bg=COLORS["white"], fg=COLORS["fg_text"])
         
@@ -408,23 +508,26 @@ class NoteApp(tk.Tk):
 
         # --- PANE 3: TO-DO ---
         pane_todo = tk.Frame(paned, bg=COLORS["bg_main"])
-        paned.add(pane_todo, width=280) # Increased width for date
+        paned.add(pane_todo, width=280)
         t_head = tk.Frame(pane_todo, bg=COLORS["bg_sec"], pady=8, padx=10)
         t_head.pack(fill="x")
         tk.Label(t_head, text="Project Tasks", font=("Segoe UI", 10, "bold"), bg=COLORS["bg_sec"], fg=COLORS["fg_text"]).pack(anchor="w")
         
-        # Add Task Input
         t_input = tk.Frame(pane_todo, bg=COLORS["bg_main"], pady=5)
         t_input.pack(fill="x")
         
-        self.e_task = ttk.Entry(t_input)
+        self.e_task = ttk.Entry(t_input, width=15)
         self.e_task.pack(side="left", fill="x", expand=True, padx=(5,0))
         
-        # NEW: Date Entry
-        self.e_date = ttk.Entry(t_input, width=11, justify="center")
-        self.e_date.insert(0, "YYYY-MM-DD")
-        self.e_date.bind("<FocusIn>", lambda e: self.e_date.delete(0, "end") if "Y" in self.e_date.get() else None)
+        self.e_date = ttk.Entry(t_input, width=12, justify="center")
+        self.e_date.insert(0, "DD-MM-YYYY")
+        self.e_date.bind("<FocusIn>", lambda e: self.e_date.delete(0, "end") if "D" in self.e_date.get() else None)
         self.e_date.pack(side="left", padx=5)
+        
+        # Calendar Button
+        btn_cal = tk.Button(t_input, text="📅", width=3, bg=COLORS["bg_sec"], relief="flat",
+                            command=lambda: CalendarDialog(self, self._set_date_from_cal))
+        btn_cal.pack(side="left", padx=2)
 
         self.e_task.bind("<Return>", lambda e: self.add_task())
         self.e_date.bind("<Return>", lambda e: self.add_task())
@@ -436,6 +539,10 @@ class NoteApp(tk.Tk):
 
         self.refresh_notes_list()
         self.refresh_todo_list()
+
+    def _set_date_from_cal(self, date_str):
+        self.e_date.delete(0, "end")
+        self.e_date.insert(0, date_str)
 
     # --- Note Logic ---
     def refresh_notes_list(self):
@@ -487,51 +594,116 @@ class NoteApp(tk.Tk):
             self.editor_text.pack_forget()
             self.refresh_notes_list()
 
-    # --- NEW: Export Logic ---
-    def export_note(self):
-        if not self.current_note_id: return
+    # --- PDF EXPORT (UPDATED) ---
+    def open_export_dialog(self):
+        d = tk.Toplevel(self)
+        d.title("Export PDF")
+        d.geometry("300x150")
+        d.iconbitmap("icon.ico")
+        d.resizable(False, False)
+        d.configure(bg=COLORS["bg_main"])
+        
+        tk.Label(d, text="Select Export Mode", bg=COLORS["bg_main"], font=("Segoe UI", 10, "bold")).pack(pady=15)
+        
+        def export(mode):
+            d.destroy()
+            self.generate_pdf_export(mode)
 
-        content = self.editor_text.get("1.0", "end-1c")
-        # Extract title from first line
-        title = content.split('\n')[0][:50] if content else "note"
-        safe_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).strip()
-        
+        f = tk.Frame(d, bg=COLORS["bg_main"])
+        f.pack(pady=10)
+        ttk.Button(f, text="Current Note", command=lambda: export("current")).pack(side="left", padx=10)
+        ttk.Button(f, text="Whole Notebook", command=lambda: export("notebook")).pack(side="left", padx=10)
+
+    def generate_pdf_export(self, mode):
+        if not HAS_PDF_SUPPORT:
+            messagebox.showerror("Error", "PDF support missing. Run: pip install reportlab")
+            return
+
+        data_to_print = [] 
+        if mode == "current":
+            if not self.current_note_id:
+                messagebox.showerror("Error", "No note selected!")
+                return
+            content = self.editor_text.get("1.0", "end-1c")
+            title = content.split('\n')[0][:50] if content else "Untitled"
+            data_to_print.append((title, content))
+            filename_hint = title
+        else:
+            data_to_print = self.db.get_all_notes_content(self.current_project)
+            if not data_to_print:
+                messagebox.showinfo("Info", "Notebook is empty.")
+                return
+            filename_hint = "Notebook_Export"
+
+        safe_title = "".join([c for c in filename_hint if c.isalpha() or c.isdigit() or c==' ']).strip()
         file_path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
+            defaultextension=".pdf",
             initialfile=safe_title,
-            filetypes=[("Text File", "*.txt"), ("PDF Document", "*.pdf")]
+            filetypes=[("PDF Document", "*.pdf")]
         )
-        
         if not file_path: return
 
         try:
-            if file_path.endswith(".pdf"):
-                if not HAS_PDF_SUPPORT:
-                    messagebox.showerror("Error", "PDF export requires 'reportlab'.\nRun: pip install reportlab")
-                    return
-                self._create_pdf(file_path, content)
-            else:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(content)
-            messagebox.showinfo("Export", "Note exported successfully!")
-        except Exception as e:
-            messagebox.showerror("Export Error", str(e))
+            doc = SimpleDocTemplate(file_path, pagesize=letter)
+            styles = getSampleStyleSheet()
+            
+            # Custom Styles for Centered Heading and Justified Body
+            style_title = ParagraphStyle('MyTitle', parent=styles['Heading1'], alignment=TA_CENTER, fontName='Helvetica-Bold', fontSize=14, spaceAfter=12)
+            style_body = ParagraphStyle('MyBody', parent=styles['BodyText'], alignment=TA_JUSTIFY, fontName='Helvetica', fontSize=12, leading=14)
 
-    def _create_pdf(self, path, content):
-        c = canvas.Canvas(path, pagesize=letter)
-        width, height = letter
-        text_object = c.beginText(40, height - 40)
-        text_object.setFont("Helvetica", 12)
-        
-        lines = content.split('\n')
-        for line in lines:
-            # Simple text wrapping
-            wrapped_lines = simpleSplit(line, "Helvetica", 12, width - 80)
-            for wrapped in wrapped_lines:
-                text_object.textLine(wrapped)
-        
-        c.drawText(text_object)
-        c.save()
+            story = []
+
+            for title, content in data_to_print:
+                # Add Heading (Title)
+                story.append(Paragraph(title, style_title))
+                
+                # Split content into lines to check the first line
+                lines = content.split('\n')
+                
+                # Fix Duplication: If first line equals title, skip it
+                if lines and lines[0].strip() == title.strip():
+                    lines = lines[1:]
+                
+                for paragraph in lines:
+                    if paragraph.strip():
+                        story.append(Paragraph(paragraph, style_body))
+                        story.append(Spacer(1, 6))
+                
+                if mode == "notebook":
+                    story.append(PageBreak())
+
+            def add_page_number(canvas, doc):
+                page_num = canvas.getPageNumber()
+                text = "%d" % page_num
+                canvas.setFont("Helvetica", 10)
+                # Centered Page Number
+                canvas.drawCentredString(letter[0] / 2.0, 20, text)
+
+            doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
+            messagebox.showinfo("Success", "PDF Exported Successfully!")
+
+        except Exception as e:
+            messagebox.showerror("PDF Error", str(e))
+
+    # --- PASSWORD FEATURE ---
+    def set_password_dialog(self):
+        pwd = simpledialog.askstring("Set Password", "Enter new password:", show='*')
+        if pwd:
+            self.db.set_project_password(self.current_project, pwd)
+            messagebox.showinfo("Success", "Password set successfully!")
+            self.open_project_detail(self.current_project, self.db.cursor.execute("SELECT name FROM projects WHERE id=?",(self.current_project,)).fetchone()[0])
+
+    def change_password_dialog(self):
+        pwd = simpledialog.askstring("Change Password", "Enter new password:", show='*')
+        if pwd:
+            self.db.set_project_password(self.current_project, pwd)
+            messagebox.showinfo("Success", "Password changed!")
+
+    def remove_password_dialog(self):
+        if messagebox.askyesno("Remove Lock", "Are you sure you want to remove the password?"):
+            self.db.set_project_password(self.current_project, None)
+            messagebox.showinfo("Success", "Lock removed.")
+            self.open_project_detail(self.current_project, self.db.cursor.execute("SELECT name FROM projects WHERE id=?",(self.current_project,)).fetchone()[0])
 
     # --- Text Activity Handler ---
     def on_text_activity(self, event):
@@ -667,7 +839,7 @@ class NoteApp(tk.Tk):
     def add_task(self):
         task = self.e_task.get().strip()
         date = self.e_date.get().strip()
-        if "Y" in date: date = "" # Handle placeholder
+        if "D" in date: date = "" # Handle placeholder
 
         if task:
             self.db.add_todo(self.current_project, task, date)
