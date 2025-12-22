@@ -184,6 +184,7 @@ class DatabaseManager:
 class CustomDialog(tk.Toplevel):
     def __init__(self, parent, title, width=350, height=160):
         super().__init__(parent)
+        self.withdraw() # <--- FIXED: Hide window initially to prevent "flash"
         self.title(title)
         self.geometry(f"{width}x{height}")
         try: self.iconbitmap("icon.ico")
@@ -192,10 +193,13 @@ class CustomDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
+        
+        # Position the window
         self.update_idletasks()
         x = parent.winfo_x() + (parent.winfo_width() // 2) - (width // 2)
         y = parent.winfo_y() + (parent.winfo_height() // 2) - (height // 2)
         self.geometry(f"+{x}+{y}")
+        self.deiconify() # <--- FIXED: Show window only after it is ready
 
 class CustomMessageDialog(CustomDialog):
     def __init__(self, parent, title, message, is_error=False):
@@ -448,7 +452,6 @@ class NoteApp(tk.Tk):
         self.btn_bullet.pack(side="left", padx=1)
         self.btn_number = ttk.Button(fmt_frame, text="1.", width=2, style="Tool.TButton", command=lambda: self.insert_smart_list("number"))
         self.btn_number.pack(side="left", padx=1)
-        
         search_frame = tk.Frame(self.editor_toolbar, bg="#eee")
         search_frame.pack(side="left", padx=10)
         self.editor_search_var = tk.StringVar()
@@ -459,7 +462,7 @@ class NoteApp(tk.Tk):
         self.e_editor_search.bind("<Down>", lambda e: self.navigate_search("next"))
         self.e_editor_search.bind("<Up>", lambda e: self.navigate_search("prev"))
         
-        # --- FIX: Separate widget creation and bind ---
+        # FIX: Separate widget creation from binding
         lbl_clear = tk.Label(search_frame, text="✕", bg="#eee", fg="#999", cursor="hand2")
         lbl_clear.pack(side="left", padx=(2, 5))
         lbl_clear.bind("<Button-1>", self.clear_search)
