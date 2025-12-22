@@ -3,27 +3,27 @@ from tkinter import ttk, messagebox, font
 import sqlite3
 import os
 import sys
-import re  # Added for smart text processing
+import re
 from datetime import datetime
 
 APP_NAME = "Note"
 DB_NAME = "noteapp.db"
 
 COLORS = {
-    "bg_main": "#FDFCF0",        # Very light paper/ivory
-    "bg_sec": "#F4EBC3",         # Slightly darker beige (Headers)
-    "bg_hover": "#E6D0A8",       # Selection/Hover color
-    "bg_active": "#D4B483",      # Darker beige for active buttons
-    "fg_text": "#4B3621",        # Dark Coffee Brown (Text)
-    "fg_sub": "#6F4E37",         # Lighter Brown (Subtitles)
-    "accent": "#A0522D",         # Sienna (Buttons/Highlights)
-    "search_hi": "#FFF59D",      # Pale Yellow (All matches)
-    "search_active": "#FF9800",  # Orange (Current match)
+    "bg_main": "#FDFCF0",        
+    "bg_sec": "#F4EBC3",         
+    "bg_hover": "#E6D0A8",       
+    "bg_active": "#D4B483",      
+    "fg_text": "#4B3621",        
+    "fg_sub": "#6F4E37",         
+    "accent": "#A0522D",         
+    "search_hi": "#FFF59D",      
+    "search_active": "#FF9800",  
     "white": "#FFFFFF",
     "error": "#D32F2F"
 }
 
-# --- Database Manager (Unchanged) ---
+# --- Database Manager ---
 class DatabaseManager:
     def __init__(self):
         self.db_path = self._get_app_data_path()
@@ -107,10 +107,16 @@ class DatabaseManager:
     def get_notes(self, project_id, search_query=""):
         if search_query:
             q = f"%{search_query}%"
-            self.cursor.execute("SELECT * FROM notes WHERE project_id = ? AND (title LIKE ? OR content LIKE ?) ORDER BY timestamp DESC", (project_id, q, q))
+            self.cursor.execute("SELECT id, project_id, title, timestamp FROM notes WHERE project_id = ? AND (title LIKE ? OR content LIKE ?) ORDER BY timestamp DESC", (project_id, q, q))
         else:
-            self.cursor.execute("SELECT * FROM notes WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
+            self.cursor.execute("SELECT id, project_id, title, timestamp FROM notes WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
         return self.cursor.fetchall()
+
+    # NEW: Fetch single note content specifically
+    def get_note_content(self, note_id):
+        self.cursor.execute("SELECT content FROM notes WHERE id = ?", (note_id,))
+        result = self.cursor.fetchone()
+        return result[0] if result else ""
 
     def delete_note(self, note_id):
         self.cursor.execute("DELETE FROM notes WHERE id = ?", (note_id,))
@@ -209,7 +215,6 @@ class NoteApp(tk.Tk):
         style.map("TButton", background=[("active", COLORS["bg_hover"])])
         
         style.configure("Tool.TButton", font=("Segoe UI", 9), padding=2, background=COLORS["bg_sec"])
-        # Use bg_active for "Active" state of tool buttons
         style.map("Tool.TButton", background=[("active", COLORS["bg_active"]), ("pressed", COLORS["bg_active"])])
         
         style.configure("Delete.TButton", font=("Segoe UI", 8), background=COLORS["bg_main"], foreground="#A00", borderwidth=0)
@@ -335,7 +340,6 @@ class NoteApp(tk.Tk):
         ttk.Button(fmt_frame, text="I", width=2, style="Tool.TButton", command=lambda: self.toggle_format("italic")).pack(side="left", padx=1)
         ttk.Button(fmt_frame, text="U", width=2, style="Tool.TButton", command=lambda: self.toggle_format("underline")).pack(side="left", padx=1)
         
-        # Smart List Buttons (Save references to change visual state)
         self.btn_bullet = ttk.Button(fmt_frame, text="•", width=2, style="Tool.TButton", command=lambda: self.insert_smart_list("bullet"))
         self.btn_bullet.pack(side="left", padx=1)
         
@@ -375,7 +379,6 @@ class NoteApp(tk.Tk):
         self.editor_text.tag_configure("search_hi", background=COLORS["search_hi"])
         self.editor_text.tag_configure("search_active", background=COLORS["search_active"], foreground="white")
         
-        # Binds for Auto Heading and Button Indication
         self.editor_text.bind("<KeyRelease>", self.on_text_activity)
         self.editor_text.bind("<ButtonRelease-1>", self.on_text_activity)
 
@@ -400,13 +403,17 @@ class NoteApp(tk.Tk):
     # --- Note Logic ---
     def refresh_notes_list(self):
         for w in self.note_scroll.scrollable_frame.winfo_children(): w.destroy()
+        # Optimized fetch: DB now returns (id, project_id, title, timestamp) only
         notes = self.db.get_notes(self.current_project, self.note_search_var.get())
-        for nid, pid, title, content, ts in notes:
+        for nid, pid, title, ts in notes:
             item = tk.Frame(self.note_scroll.scrollable_frame, bg=COLORS["white"], bd=1, relief="solid")
             item.pack(fill="x", pady=2, padx=2)
-            def select_wrapper(e, n=nid, c=content): 
+            
+            # FIXED: We DO NOT pass content here anymore. We only pass the ID.
+            def select_wrapper(e, n=nid): 
                 self.auto_save_current()
-                self.load_editor(n, c)
+                self.load_editor(n)
+            
             f = tk.Frame(item, bg=COLORS["white"], padx=8, pady=8)
             f.pack(fill="x")
             l1 = tk.Label(f, text=title, font=("Segoe UI", 10, "bold"), bg=COLORS["white"], anchor="w", fg=COLORS["fg_text"])
@@ -415,20 +422,24 @@ class NoteApp(tk.Tk):
             l2.pack(fill="x")
             for w in [item, f, l1, l2]: w.bind("<Button-1>", select_wrapper)
 
-    def load_editor(self, nid, content):
+    def load_editor(self, nid, content=None):
         self.current_note_id = nid
+        
+        # FIXED: Always fetch fresh content from DB
+        fresh_content = self.db.get_note_content(nid)
+        
         self.clear_search(None)
         self.editor_toolbar.pack(side="top", fill="x")
         self.editor_text.pack(fill="both", expand=True)
         self.editor_text.delete("1.0", "end")
-        self.editor_text.insert("1.0", content)
-        self.on_text_activity(None) # Initial styling check
+        self.editor_text.insert("1.0", fresh_content)
+        self.on_text_activity(None) 
 
     def create_new_note(self):
         self.auto_save_current()
         nid = self.db.add_note(self.current_project)
         self.refresh_notes_list()
-        self.load_editor(nid, "New Note")
+        self.load_editor(nid) # No content passed, load_editor will fetch it
 
     def auto_save_current(self):
         if self.current_note_id:
@@ -446,24 +457,19 @@ class NoteApp(tk.Tk):
 
     # --- Text Activity Handler ---
     def on_text_activity(self, event):
-        """Combines auto-heading and button state check"""
-        # 1. Update Heading Style
         self.editor_text.tag_remove("heading", "1.0", "end")
         self.editor_text.tag_add("heading", "1.0", "1.end")
 
-        # 2. Check Line Format for Button Indication
         try:
             current_idx = self.editor_text.index("insert")
             line_content = self.editor_text.get(f"{current_idx} linestart", f"{current_idx} lineend")
             
-            # Check Bullet
-            if re.match(r"^\s*•\s+", line_content):
+            if re.match(r"^\s*•\s*", line_content):
                 self._set_btn_active(self.btn_bullet, True)
             else:
                 self._set_btn_active(self.btn_bullet, False)
 
-            # Check Number
-            if re.match(r"^\s*\d+\.\s+", line_content):
+            if re.match(r"^\s*\d+\.\s*", line_content):
                 self._set_btn_active(self.btn_number, True)
             else:
                 self._set_btn_active(self.btn_number, False)
@@ -471,11 +477,7 @@ class NoteApp(tk.Tk):
             pass
 
     def _set_btn_active(self, btn, is_active):
-        """Simulate active state by changing styles"""
-        # Note: ttk styling is tricky for individual buttons, simpler to rely on visual cue
         if is_active:
-             # Just a simple hack: change text color or use specific style map
-             # Here we rely on the custom style map defined in _setup_styles
              btn.state(["pressed"]) 
         else:
              btn.state(["!pressed"])
@@ -494,7 +496,6 @@ class NoteApp(tk.Tk):
             start = self.editor_text.index("sel.first")
             end = self.editor_text.index("sel.last")
         except tk.TclError:
-            # Handle Single Line (Cursor Position)
             start = self.editor_text.index("insert linestart")
             end = self.editor_text.index("insert lineend")
 
@@ -502,46 +503,36 @@ class NoteApp(tk.Tk):
         lines = text_block.split('\n')
         new_lines = []
         
-        # Regex Patterns
-        pat_bullet = re.compile(r"^\s*•\s+")
-        pat_number = re.compile(r"^\s*\d+\.\s+")
+        pat_bullet = re.compile(r"^\s*•\s*") 
+        pat_number = re.compile(r"^\s*\d+\.\s*")
 
         for i, line in enumerate(lines):
-            # Check what this line currently is
             is_bullet = bool(pat_bullet.match(line))
             is_number = bool(pat_number.match(line))
             
-            # Clean content (strip existing markers)
             clean_line = pat_bullet.sub("", line)
             clean_line = pat_number.sub("", clean_line)
             clean_line = clean_line.strip()
 
             if not clean_line and len(lines) > 1: 
-                 # Preserve empty lines in multi-line selection
                  new_lines.append("")
                  continue
 
-            # LOGIC:
             if list_type == "bullet":
                 if is_bullet: 
-                    # Toggle Off
                     new_lines.append(clean_line)
                 else: 
-                    # Add Bullet (Switching from number handled here too because we use clean_line)
                     new_lines.append(f" • {clean_line}")
             
             elif list_type == "number":
                 if is_number:
-                    # Toggle Off
                     new_lines.append(clean_line)
                 else:
-                    # Add Number
                     new_lines.append(f" {i+1}. {clean_line}")
 
-        # Replace text
         self.editor_text.delete(start, end)
         self.editor_text.insert(start, "\n".join(new_lines))
-        self.on_text_activity(None) # Update visuals
+        self.on_text_activity(None) 
 
     # --- Instant Search Logic ---
     def clear_search(self, event):
