@@ -2,6 +2,7 @@
 import sqlite3
 import os
 import sys
+import json
 from datetime import datetime
 from config import APP_NAME, DB_NAME
 
@@ -68,6 +69,21 @@ class DatabaseManager:
             self.conn.commit()
         except sqlite3.OperationalError: pass
 
+    # --- HELPER: Extracts clean text title from JSON or Plain Text ---
+    def _get_plain_text_title(self, content):
+        try:
+            # Try to parse as JSON (New Format)
+            data = json.loads(content)
+            # If successful, extract the 'text' field
+            raw_text = data.get("text", "")
+        except (json.JSONDecodeError, TypeError):
+            # If parsing fails, it's likely old plain text (Old Format)
+            raw_text = content
+        
+        # Grab the first line, limit to 30 chars
+        title = raw_text.split('\n')[0][:30].strip()
+        return title if title else "Untitled"
+
     def add_project(self, name, description):
         self.cursor.execute("INSERT INTO projects (name, description, created_at) VALUES (?, ?, ?)",
                             (name, description, datetime.now().strftime("%Y-%m-%d %H:%M")))
@@ -95,14 +111,18 @@ class DatabaseManager:
         return res[0] if res else None
 
     def add_note(self, project_id, content="New Note"):
-        title = content.split('\n')[0][:30] if content else "Untitled"
+        # FIX: Use helper to generate clean title
+        title = self._get_plain_text_title(content)
+        
         self.cursor.execute("INSERT INTO notes (project_id, title, content, timestamp) VALUES (?, ?, ?, ?)",
                             (project_id, title, content, datetime.now().strftime("%Y-%m-%d %H:%M")))
         self.conn.commit()
         return self.cursor.lastrowid
 
     def update_note(self, note_id, content):
-        title = content.split('\n')[0][:30] if content else "Untitled"
+        # FIX: Use helper to generate clean title
+        title = self._get_plain_text_title(content)
+        
         self.cursor.execute("UPDATE notes SET title = ?, content = ?, timestamp = ? WHERE id = ?",
                             (title, content, datetime.now().strftime("%Y-%m-%d %H:%M"), note_id))
         self.conn.commit()
