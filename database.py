@@ -69,18 +69,12 @@ class DatabaseManager:
             self.conn.commit()
         except sqlite3.OperationalError: pass
 
-    # --- HELPER: Extracts clean text title from JSON or Plain Text ---
     def _get_plain_text_title(self, content):
         try:
-            # Try to parse as JSON (New Format)
             data = json.loads(content)
-            # If successful, extract the 'text' field
             raw_text = data.get("text", "")
         except (json.JSONDecodeError, TypeError):
-            # If parsing fails, it's likely old plain text (Old Format)
             raw_text = content
-        
-        # Grab the first line, limit to 30 chars
         title = raw_text.split('\n')[0][:30].strip()
         return title if title else "Untitled"
 
@@ -111,18 +105,14 @@ class DatabaseManager:
         return res[0] if res else None
 
     def add_note(self, project_id, content="New Note"):
-        # FIX: Use helper to generate clean title
         title = self._get_plain_text_title(content)
-        
         self.cursor.execute("INSERT INTO notes (project_id, title, content, timestamp) VALUES (?, ?, ?, ?)",
                             (project_id, title, content, datetime.now().strftime("%Y-%m-%d %H:%M")))
         self.conn.commit()
         return self.cursor.lastrowid
 
     def update_note(self, note_id, content):
-        # FIX: Use helper to generate clean title
         title = self._get_plain_text_title(content)
-        
         self.cursor.execute("UPDATE notes SET title = ?, content = ?, timestamp = ? WHERE id = ?",
                             (title, content, datetime.now().strftime("%Y-%m-%d %H:%M"), note_id))
         self.conn.commit()
@@ -140,8 +130,9 @@ class DatabaseManager:
         result = self.cursor.fetchone()
         return result[0] if result else ""
     
+    # --- UPDATED: Now returns ID as well ---
     def get_all_notes_content(self, project_id):
-        self.cursor.execute("SELECT title, content FROM notes WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
+        self.cursor.execute("SELECT id, title, content FROM notes WHERE project_id = ? ORDER BY timestamp DESC", (project_id,))
         return self.cursor.fetchall()
 
     def delete_note(self, note_id):

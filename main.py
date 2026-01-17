@@ -4,6 +4,7 @@ from tkinter import ttk, font, filedialog
 import re
 import os
 import json
+import glob
 from config import APP_NAME, COLORS
 from database import DatabaseManager
 from whiteboard import Whiteboard
@@ -17,6 +18,7 @@ try:
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image as PDFImage
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.enums import TA_JUSTIFY, TA_CENTER
     HAS_PDF = True
 except ImportError:
     HAS_PDF = False
@@ -40,6 +42,9 @@ class NoteApp(tk.Tk):
         self.db = DatabaseManager()
         self.current_project = None
         self.current_note_id = None
+        
+        self.responsive_editor_btns = []
+        self.display_mode = "long"
         
         # Search Vars
         self.search_matches = [] 
@@ -174,10 +179,8 @@ class NoteApp(tk.Tk):
         paned = tk.PanedWindow(self.container, orient=tk.HORIZONTAL, bg=COLORS["bg_sec"], sashwidth=4)
         paned.pack(fill="both", expand=True, padx=20, pady=(10, 20))
         
-        # 1. Notes List Pane (Left) - Kept standard width
         pane_notes = tk.Frame(paned, bg=COLORS["bg_main"])
         paned.add(pane_notes, width=230)
-        
         n_tool = tk.Frame(pane_notes, bg=COLORS["bg_sec"], pady=5, padx=5)
         n_tool.pack(fill="x")
         self.note_search_var = tk.StringVar()
@@ -187,7 +190,6 @@ class NoteApp(tk.Tk):
         self.note_scroll = ScrollableFrame(pane_notes, bg_color=COLORS["bg_main"])
         self.note_scroll.pack(fill="both", expand=True)
         
-        # 2. Editor Pane (Center) - WIDENED to ~750
         pane_center = tk.Frame(paned, bg=COLORS["white"])
         paned.add(pane_center, width=750)
         
@@ -198,12 +200,10 @@ class NoteApp(tk.Tk):
         self.notebook_tabs.add(self.tab_editor, text=" 📝 Editor ")
         self._setup_editor_ui(self.tab_editor)
         
-        # --- WHITEBOARD SETUP ---
         app_data_path = os.path.dirname(self.db.db_path)
         self.tab_whiteboard = Whiteboard(self.notebook_tabs, storage_path=app_data_path)
         self.notebook_tabs.add(self.tab_whiteboard, text=" ✏️ Notepad ")
 
-        # 3. Todo Pane (Right) - NARROWED to ~170
         pane_todo = tk.Frame(paned, bg=COLORS["bg_main"])
         paned.add(pane_todo, width=170)
         self._setup_todo_ui(pane_todo)
@@ -215,6 +215,9 @@ class NoteApp(tk.Tk):
         self.editor_toolbar = tk.Frame(parent, bg="#eee", pady=5, padx=5)
         self.editor_toolbar.pack(side="top", fill="x")
         
+        parent.bind("<Configure>", self.on_editor_resize)
+        self.responsive_editor_btns = []
+
         fmt_frame = tk.Frame(self.editor_toolbar, bg="#eee")
         fmt_frame.pack(side="left", padx=(0, 10))
         
@@ -224,6 +227,8 @@ class NoteApp(tk.Tk):
         
         self.list_mb = ttk.Menubutton(fmt_frame, text="List Options ▼", direction='below')
         self.list_mb.pack(side="left", padx=5)
+        self.responsive_editor_btns.append((self.list_mb, "Lists ▼", "List Options ▼"))
+
         self.list_menu = tk.Menu(self.list_mb, tearoff=0)
         self.list_mb.configure(menu=self.list_menu)
         
@@ -241,6 +246,10 @@ class NoteApp(tk.Tk):
         self.editor_search_var.trace("w", self.on_search_type) 
         self.e_editor_search = ttk.Entry(search_frame, textvariable=self.editor_search_var, width=15)
         self.e_editor_search.pack(side="left")
+        
+        self.btn_del_note = ttk.Button(self.editor_toolbar, text="Delete Note", style="Delete.TButton", command=self.delete_current_note)
+        self.btn_del_note.pack(side="right", padx=5)
+        self.responsive_editor_btns.append((self.btn_del_note, "🗑️", "Delete Note"))
         
         self.editor_text = tk.Text(parent, font=self.default_font, wrap="word", bd=0, padx=20, pady=20, 
                                    bg=COLORS["white"], fg=COLORS["fg_text"],
@@ -261,6 +270,14 @@ class NoteApp(tk.Tk):
         self.editor_text.bind("<Control-y>", lambda e: self.redo_action())
         self.editor_text.bind("<FocusOut>", lambda e: self.auto_save_current())
 
+    def on_editor_resize(self, event):
+        width = event.width
+        new_mode = "long" if width > 600 else "short"
+        if new_mode != self.display_mode:
+            self.display_mode = new_mode
+            for btn, short, long in self.responsive_editor_btns:
+                btn.config(text=long if new_mode == "long" else short)
+
     def _setup_todo_ui(self, parent):
         t_head = tk.Frame(parent, bg=COLORS["bg_sec"], pady=8, padx=10)
         t_head.pack(fill="x")
@@ -269,7 +286,6 @@ class NoteApp(tk.Tk):
         t_input = tk.Frame(parent, bg=COLORS["bg_main"], pady=5)
         t_input.pack(fill="x")
         
-        # --- REMOVED Date Entry, just text ---
         self.e_task = ttk.Entry(t_input)
         self.e_task.pack(side="left", fill="x", expand=True, padx=(5,0))
         
@@ -425,11 +441,9 @@ class NoteApp(tk.Tk):
 
     def load_editor(self, nid):
         self.current_note_id = nid
-        # 1. Load Text Content
         content = self.db.get_note_content(nid)
         self.apply_content_snapshot(content)
         self.editor_text.edit_reset()
-        # 2. Load Whiteboard Page 0 for this note
         self.tab_whiteboard.load_board(nid)
 
     def create_new_note(self):
@@ -440,49 +454,93 @@ class NoteApp(tk.Tk):
 
     def auto_save_current(self):
         if self.current_note_id:
-            # 1. Save Text
             content = self.get_content_snapshot()
             self.db.update_note(self.current_note_id, content)
             self.refresh_notes_list()
-            # 2. Save Whiteboard
             self.tab_whiteboard.save_current_page()
+
+    def delete_current_note(self):
+        if self.current_note_id and ask_yes_no(self, "Delete", "Delete this note?"):
+            self.db.delete_note(self.current_note_id)
+            self.current_note_id = None
+            self.editor_toolbar.pack_forget()
+            self.editor_text.pack_forget()
+            self.refresh_notes_list()
 
     def open_export_dialog(self):
         d = tk.Toplevel(self)
         d.title("Export PDF")
-        ttk.Button(d, text="Current Note + All Sketches", command=lambda: [d.destroy(), self.generate_pdf_export()]).pack(pady=20, padx=20)
+        # --- NEW: Three Explicit Options ---
+        ttk.Button(d, text="Current Note (Text Only)", command=lambda: [d.destroy(), self.generate_pdf_export("current_text")]).pack(pady=5, padx=20, fill="x")
+        ttk.Button(d, text="Current Note (Text + Whiteboard)", command=lambda: [d.destroy(), self.generate_pdf_export("current_full")]).pack(pady=5, padx=20, fill="x")
+        ttk.Button(d, text="Whole Notebook (Text + Whiteboard)", command=lambda: [d.destroy(), self.generate_pdf_export("notebook_full")]).pack(pady=5, padx=20, fill="x")
 
-    def generate_pdf_export(self):
+    def generate_pdf_export(self, mode):
         if not HAS_PDF: return show_msg(self, "Error", "Install 'reportlab' first.", True)
         path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
         if not path: return
+        
         try:
             doc = SimpleDocTemplate(path, pagesize=letter)
             styles = getSampleStyleSheet()
             story = []
-            if self.current_note_id:
-                start_index = "1.0"
-                while True:
-                    text_segment = self.editor_text.get(start_index, f"{start_index} lineend")
-                    if not text_segment: break
-                    tags = self.editor_text.tag_names(start_index)
-                    style = styles['Heading1'] if "heading" in tags else styles['BodyText']
-                    story.append(Paragraph(text_segment, style))
-                    story.append(Spacer(1, 6))
-                    start_index = self.editor_text.index(f"{start_index} + 1 line")
-                    if self.editor_text.compare(start_index, "==", "end"): break
             
-            # --- UPDATED: Get ALL whiteboard pages ---
-            draw_paths = self.tab_whiteboard.get_all_image_paths()
-            if draw_paths:
-                story.append(PageBreak())
-                story.append(Paragraph("Attached Sketches:", styles['Heading2']))
-                story.append(Spacer(1, 10))
-                for idx, p in enumerate(draw_paths):
-                    story.append(Paragraph(f"Page {idx+1}", styles['Heading3']))
-                    story.append(PDFImage(p, width=400, height=300))
+            # --- HELPER: Adds text content from a raw string (JSON or Plain) ---
+            def add_note_text_to_story(raw_content, title_prefix=""):
+                # Parse JSON if needed
+                try:
+                    data = json.loads(raw_content)
+                    text = data.get("text", "")
+                except:
+                    text = raw_content
+                
+                if title_prefix:
+                    story.append(Paragraph(title_prefix, styles['Heading1']))
+                    story.append(Spacer(1, 12))
+
+                for line in text.split('\n'):
+                    if line.strip():
+                        # Simple styling for now (preserved headings logic could go here)
+                        story.append(Paragraph(line, styles['BodyText']))
+                        story.append(Spacer(1, 6))
+            
+            # --- HELPER: Adds Images ---
+            def add_images_to_story(note_id):
+                app_data_path = os.path.dirname(self.db.db_path)
+                pattern = os.path.join(app_data_path, f"wb_{note_id}_*.png")
+                paths = sorted(glob.glob(pattern))
+                
+                if paths:
                     story.append(Spacer(1, 10))
-            
+                    story.append(Paragraph("Sketches:", styles['Heading3']))
+                    for p in paths:
+                        try:
+                            story.append(PDFImage(p, width=400, height=300))
+                            story.append(Spacer(1, 10))
+                        except: pass
+
+            # --- EXPORT LOGIC ---
+            if mode.startswith("current"):
+                if not self.current_note_id: return show_msg(self, "Error", "No note selected!")
+                # For current note, we trust the editor's visible text
+                raw_text = self.editor_text.get("1.0", "end-1c")
+                add_note_text_to_story(raw_text) # It's already plain text from .get()
+                
+                if mode == "current_full":
+                    # Save current state first
+                    self.tab_whiteboard.save_current_page()
+                    add_images_to_story(self.current_note_id)
+
+            elif mode == "notebook_full":
+                # Fetch ALL notes from DB
+                notes = self.db.get_all_notes_content(self.current_project)
+                if not notes: return show_msg(self, "Info", "Notebook is empty.")
+                
+                for nid, title, content in notes:
+                    add_note_text_to_story(content, title_prefix=title)
+                    add_images_to_story(nid)
+                    story.append(PageBreak())
+
             doc.build(story)
             show_msg(self, "Success", "PDF Exported Successfully!")
         except Exception as e:
@@ -490,9 +548,8 @@ class NoteApp(tk.Tk):
 
     def add_task(self):
         t = self.e_task.get().strip()
-        # --- REMOVED Date Logic ---
         if t: 
-            self.db.add_todo(self.current_project, t, "") # Pass empty string for date
+            self.db.add_todo(self.current_project, t, "") # No date
             self.e_task.delete(0, "end")
             self.refresh_todo_list()
 
@@ -506,7 +563,6 @@ class NoteApp(tk.Tk):
             def toggle(t=tid, v=var): self.db.toggle_todo(t, v.get()); self.refresh_todo_list()
             tk.Checkbutton(row, variable=var, command=lambda: toggle(tid, var), bg=COLORS["white"], activebackground=COLORS["white"]).pack(side="left")
             fg_col = "#aaa" if is_done else COLORS["fg_text"]
-            # --- Removed Date Display ---
             tk.Label(row, text=task, bg=COLORS["white"], fg=fg_col, wraplength=140, justify="left", anchor="w").pack(side="left", fill="x", expand=True)
             btn_del = tk.Label(row, text="✕", fg="#aaa", bg=COLORS["white"], cursor="hand2")
             btn_del.pack(side="right", padx=5)
