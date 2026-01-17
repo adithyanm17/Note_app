@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk, font, filedialog
 import re
 import os
-import json  # NEW: Required for saving formatting
+import json
 from config import APP_NAME, COLORS
 from database import DatabaseManager
 from whiteboard import Whiteboard
@@ -166,15 +166,18 @@ class NoteApp(tk.Tk):
         
         has_pass = self.db.get_project_password(pid)
         if has_pass:
-            ttk.Button(tools_frame, text="Pass Settings", style="Tool.TButton", command=self.change_password_dialog).pack(side="left", padx=5)
+            ttk.Button(tools_frame, text="Change Password", style="Tool.TButton", command=self.change_password_dialog).pack(side="left", padx=5)
+            ttk.Button(tools_frame, text="Remove Lock", style="Tool.TButton", command=self.remove_password_dialog).pack(side="left", padx=5)
         else:
-            ttk.Button(tools_frame, text="Lock", style="Tool.TButton", command=self.set_password_dialog).pack(side="left", padx=5)
+            ttk.Button(tools_frame, text="Set Password", style="Tool.TButton", command=self.set_password_dialog).pack(side="left", padx=5)
         
         paned = tk.PanedWindow(self.container, orient=tk.HORIZONTAL, bg=COLORS["bg_sec"], sashwidth=4)
         paned.pack(fill="both", expand=True, padx=20, pady=(10, 20))
         
+        # 1. Notes List Pane (Left) - Kept standard width
         pane_notes = tk.Frame(paned, bg=COLORS["bg_main"])
-        paned.add(pane_notes, width=250)
+        paned.add(pane_notes, width=230)
+        
         n_tool = tk.Frame(pane_notes, bg=COLORS["bg_sec"], pady=5, padx=5)
         n_tool.pack(fill="x")
         self.note_search_var = tk.StringVar()
@@ -184,8 +187,9 @@ class NoteApp(tk.Tk):
         self.note_scroll = ScrollableFrame(pane_notes, bg_color=COLORS["bg_main"])
         self.note_scroll.pack(fill="both", expand=True)
         
+        # 2. Editor Pane (Center) - WIDENED to ~750
         pane_center = tk.Frame(paned, bg=COLORS["white"])
-        paned.add(pane_center, width=550)
+        paned.add(pane_center, width=750)
         
         self.notebook_tabs = ttk.Notebook(pane_center)
         self.notebook_tabs.pack(fill="both", expand=True)
@@ -194,11 +198,14 @@ class NoteApp(tk.Tk):
         self.notebook_tabs.add(self.tab_editor, text=" 📝 Editor ")
         self._setup_editor_ui(self.tab_editor)
         
-        self.tab_whiteboard = Whiteboard(self.notebook_tabs)
+        # --- WHITEBOARD SETUP ---
+        app_data_path = os.path.dirname(self.db.db_path)
+        self.tab_whiteboard = Whiteboard(self.notebook_tabs, storage_path=app_data_path)
         self.notebook_tabs.add(self.tab_whiteboard, text=" ✏️ Notepad ")
 
+        # 3. Todo Pane (Right) - NARROWED to ~170
         pane_todo = tk.Frame(paned, bg=COLORS["bg_main"])
-        paned.add(pane_todo, width=250)
+        paned.add(pane_todo, width=170)
         self._setup_todo_ui(pane_todo)
 
         self.refresh_notes_list()
@@ -215,7 +222,6 @@ class NoteApp(tk.Tk):
         ttk.Button(fmt_frame, text="B", width=2, style="Tool.TButton", command=lambda: self.toggle_format("bold")).pack(side="left", padx=1)
         ttk.Button(fmt_frame, text="I", width=2, style="Tool.TButton", command=lambda: self.toggle_format("italic")).pack(side="left", padx=1)
         
-        # --- NEW: Menu Button for Lists ---
         self.list_mb = ttk.Menubutton(fmt_frame, text="List Options ▼", direction='below')
         self.list_mb.pack(side="left", padx=5)
         self.list_menu = tk.Menu(self.list_mb, tearoff=0)
@@ -253,6 +259,7 @@ class NoteApp(tk.Tk):
         self.editor_text.bind("<Key>", self.on_key_press)
         self.editor_text.bind("<Control-z>", lambda e: self.undo_action())
         self.editor_text.bind("<Control-y>", lambda e: self.redo_action())
+        self.editor_text.bind("<FocusOut>", lambda e: self.auto_save_current())
 
     def _setup_todo_ui(self, parent):
         t_head = tk.Frame(parent, bg=COLORS["bg_sec"], pady=8, padx=10)
@@ -261,21 +268,17 @@ class NoteApp(tk.Tk):
         
         t_input = tk.Frame(parent, bg=COLORS["bg_main"], pady=5)
         t_input.pack(fill="x")
-        self.e_task = ttk.Entry(t_input, width=15)
+        
+        # --- REMOVED Date Entry, just text ---
+        self.e_task = ttk.Entry(t_input)
         self.e_task.pack(side="left", fill="x", expand=True, padx=(5,0))
-        self.e_date = ttk.Entry(t_input, width=12, justify="center")
-        self.e_date.insert(0, "DD-MM-YYYY")
-        self.e_date.bind("<FocusIn>", lambda e: self.e_date.delete(0, "end") if "D" in self.e_date.get() else None)
-        self.e_date.pack(side="left", padx=5)
-        tk.Button(t_input, text="📅", width=3, bg=COLORS["bg_sec"], relief="flat", command=lambda: CalendarDialog(self, lambda d: (self.e_date.delete(0,"end"), self.e_date.insert(0,d)))).pack(side="left", padx=2)
         
         self.e_task.bind("<Return>", lambda e: self.add_task())
-        ttk.Button(t_input, text="+", width=3, command=self.add_task).pack(side="right", padx=(0,5))
+        ttk.Button(t_input, text="+", width=3, command=self.add_task).pack(side="right", padx=(5,5))
         
         self.todo_scroll = ScrollableFrame(parent, bg_color=COLORS["bg_main"])
         self.todo_scroll.pack(fill="both", expand=True)
 
-    # --- LIST LOGIC (Updated) ---
     def insert_smart_list(self, list_type):
         try:
             start = self.editor_text.index("sel.first")
@@ -286,33 +289,22 @@ class NoteApp(tk.Tk):
             
         start_line = f"{start} linestart"
         end_line = f"{end} lineend"
-        
-        # Get selected text
         content = self.editor_text.get(start_line, end_line)
         lines = content.split('\n')
         new_lines = []
-
-        # Regex to strip existing list prefixes (e.g., "1. ", "A. ", "• ")
         prefix_pattern = r"^\s*(•|\d+\.|[A-Za-z]\.)\s*"
 
         for i, line in enumerate(lines):
             clean_text = re.sub(prefix_pattern, "", line)
-            
-            # Skip empty lines if multiple lines selected
             if not clean_text.strip() and len(lines) > 1:
                 new_lines.append("")
                 continue
             
-            if list_type == "bullet":
-                new_prefix = "• "
-            elif list_type == "number":
-                new_prefix = f"{i+1}. "
-            elif list_type == "alpha_upper":
-                new_prefix = f"{chr(65 + i)}. "  # A, B, C...
-            elif list_type == "alpha_lower":
-                new_prefix = f"{chr(97 + i)}. "  # a, b, c...
-            else:
-                new_prefix = ""
+            if list_type == "bullet": new_prefix = "• "
+            elif list_type == "number": new_prefix = f"{i+1}. "
+            elif list_type == "alpha_upper": new_prefix = f"{chr(65 + i)}. "
+            elif list_type == "alpha_lower": new_prefix = f"{chr(97 + i)}. "
+            else: new_prefix = ""
 
             new_lines.append(f"{new_prefix}{clean_text}")
 
@@ -320,7 +312,6 @@ class NoteApp(tk.Tk):
         self.editor_text.insert(start_line, "\n".join(new_lines))
         self.auto_save_current()
 
-    # --- UNDO / REDO / SENTENCE ---
     def on_key_press(self, event):
         if event.char in ['.', '!', '?', '\n']:
             self.editor_text.edit_separator()
@@ -374,7 +365,7 @@ class NoteApp(tk.Tk):
             current = self.editor_text.tag_names("sel.first")
             if tag in current: self.editor_text.tag_remove(tag, "sel.first", "sel.last")
             else: self.editor_text.tag_add(tag, "sel.first", "sel.last")
-            self.auto_save_current() # Save immediately on toggle
+            self.auto_save_current()
         except: pass
 
     def toggle_heading(self):
@@ -390,7 +381,7 @@ class NoteApp(tk.Tk):
                 self.editor_text.tag_remove("heading", start, end)
             else:
                 self.editor_text.tag_add("heading", start, end)
-            self.auto_save_current() # Save immediately
+            self.auto_save_current()
         except Exception: pass
         
     def refresh_notes_list(self):
@@ -399,21 +390,18 @@ class NoteApp(tk.Tk):
         for nid, pid, title, ts in notes:
             item = tk.Frame(self.note_scroll.scrollable_frame, bg=COLORS["white"], bd=1, relief="solid")
             item.pack(fill="x", pady=2, padx=2)
+            def select_wrapper(e, n=nid): self.auto_save_current(); self.load_editor(n)
             f = tk.Frame(item, bg=COLORS["white"], padx=8, pady=8)
             f.pack(fill="x")
             tk.Label(f, text=title, font=("Segoe UI", 10, "bold"), bg=COLORS["white"], anchor="w").pack(fill="x")
             def load(e, n=nid): self.auto_save_current(); self.load_editor(n)
             for w in [item, f] + f.winfo_children(): w.bind("<Button-1>", load)
 
-    # --- SERIALIZATION LOGIC (The Fix for Persistence) ---
     def get_content_snapshot(self):
-        """Returns JSON with text and tag positions"""
         text = self.editor_text.get("1.0", "end-1c")
         tags_data = []
-        # Only save persistent tags (ignore misspelled, search_hi)
         for tag in ["bold", "italic", "heading"]:
             ranges = self.editor_text.tag_ranges(tag)
-            # Ranges come as (start, end, start, end...), convert to strings
             if ranges:
                 tags_data.append({
                     "name": tag,
@@ -422,7 +410,6 @@ class NoteApp(tk.Tk):
         return json.dumps({"text": text, "tags": tags_data})
 
     def apply_content_snapshot(self, json_str):
-        """Parses JSON and applies text + tags"""
         self.editor_text.delete("1.0", "end")
         try:
             data = json.loads(json_str)
@@ -431,18 +418,19 @@ class NoteApp(tk.Tk):
             for tag_info in data.get("tags", []):
                 tag_name = tag_info["name"]
                 ranges = tag_info["ranges"]
-                # Apply ranges in pairs (start, end)
                 for i in range(0, len(ranges), 2):
                     self.editor_text.tag_add(tag_name, ranges[i], ranges[i+1])
         except (json.JSONDecodeError, TypeError):
-            # Fallback for old plain-text notes
             self.editor_text.insert("1.0", json_str)
 
     def load_editor(self, nid):
         self.current_note_id = nid
+        # 1. Load Text Content
         content = self.db.get_note_content(nid)
-        self.apply_content_snapshot(content) # Changed to use deserializer
+        self.apply_content_snapshot(content)
         self.editor_text.edit_reset()
+        # 2. Load Whiteboard Page 0 for this note
+        self.tab_whiteboard.load_board(nid)
 
     def create_new_note(self):
         self.auto_save_current()
@@ -452,15 +440,17 @@ class NoteApp(tk.Tk):
 
     def auto_save_current(self):
         if self.current_note_id:
-            # Changed to use serializer
+            # 1. Save Text
             content = self.get_content_snapshot()
             self.db.update_note(self.current_note_id, content)
             self.refresh_notes_list()
+            # 2. Save Whiteboard
+            self.tab_whiteboard.save_current_page()
 
     def open_export_dialog(self):
         d = tk.Toplevel(self)
         d.title("Export PDF")
-        ttk.Button(d, text="Current Note + Drawing", command=lambda: [d.destroy(), self.generate_pdf_export()]).pack(pady=20, padx=20)
+        ttk.Button(d, text="Current Note + All Sketches", command=lambda: [d.destroy(), self.generate_pdf_export()]).pack(pady=20, padx=20)
 
     def generate_pdf_export(self):
         if not HAS_PDF: return show_msg(self, "Error", "Install 'reportlab' first.", True)
@@ -481,32 +471,50 @@ class NoteApp(tk.Tk):
                     story.append(Spacer(1, 6))
                     start_index = self.editor_text.index(f"{start_index} + 1 line")
                     if self.editor_text.compare(start_index, "==", "end"): break
-            draw_path = self.tab_whiteboard.get_image_path_for_pdf()
-            if draw_path:
+            
+            # --- UPDATED: Get ALL whiteboard pages ---
+            draw_paths = self.tab_whiteboard.get_all_image_paths()
+            if draw_paths:
                 story.append(PageBreak())
-                story.append(Paragraph("Attached Sketch:", styles['Heading2']))
+                story.append(Paragraph("Attached Sketches:", styles['Heading2']))
                 story.append(Spacer(1, 10))
-                story.append(PDFImage(draw_path, width=400, height=300))
+                for idx, p in enumerate(draw_paths):
+                    story.append(Paragraph(f"Page {idx+1}", styles['Heading3']))
+                    story.append(PDFImage(p, width=400, height=300))
+                    story.append(Spacer(1, 10))
+            
             doc.build(story)
-            if draw_path: os.remove(draw_path)
             show_msg(self, "Success", "PDF Exported Successfully!")
         except Exception as e:
             show_msg(self, "Error", str(e), True)
 
     def add_task(self):
-        t = self.e_task.get()
-        d = self.e_date.get()
-        if t: self.db.add_todo(self.current_project, t, d); self.e_task.delete(0, "end"); self.refresh_todo_list()
+        t = self.e_task.get().strip()
+        # --- REMOVED Date Logic ---
+        if t: 
+            self.db.add_todo(self.current_project, t, "") # Pass empty string for date
+            self.e_task.delete(0, "end")
+            self.refresh_todo_list()
 
     def refresh_todo_list(self):
         for w in self.todo_scroll.scrollable_frame.winfo_children(): w.destroy()
-        for tid, pid, task, date, done, _ in self.db.get_todos(self.current_project):
-            row = tk.Frame(self.todo_scroll.scrollable_frame, bg="white")
-            row.pack(fill="x", pady=1)
-            var = tk.BooleanVar(value=bool(done))
-            tk.Checkbutton(row, variable=var, bg="white", command=lambda t=tid, v=var: [self.db.toggle_todo(t, v.get()), self.refresh_todo_list()]).pack(side="left")
-            tk.Label(row, text=task, bg="white").pack(side="left")
-            tk.Label(row, text="✕", fg="#aaa", bg="white").pack(side="right", padx=5)
+        todos = self.db.get_todos(self.current_project)
+        for tid, pid, task, date, is_done, _ in todos:
+            row = tk.Frame(self.todo_scroll.scrollable_frame, bg=COLORS["white"], pady=2)
+            row.pack(fill="x", pady=2)
+            var = tk.BooleanVar(value=bool(is_done))
+            def toggle(t=tid, v=var): self.db.toggle_todo(t, v.get()); self.refresh_todo_list()
+            tk.Checkbutton(row, variable=var, command=lambda: toggle(tid, var), bg=COLORS["white"], activebackground=COLORS["white"]).pack(side="left")
+            fg_col = "#aaa" if is_done else COLORS["fg_text"]
+            # --- Removed Date Display ---
+            tk.Label(row, text=task, bg=COLORS["white"], fg=fg_col, wraplength=140, justify="left", anchor="w").pack(side="left", fill="x", expand=True)
+            btn_del = tk.Label(row, text="✕", fg="#aaa", bg=COLORS["white"], cursor="hand2")
+            btn_del.pack(side="right", padx=5)
+            btn_del.bind("<Button-1>", lambda e, t=tid: self.delete_task(t))
+
+    def delete_task(self, tid):
+        self.db.delete_todo(tid)
+        self.refresh_todo_list()
 
     def set_password_dialog(self): 
         p = ask_string(self, "Set", "Password:", show="*")
