@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, font, filedialog
 import re
 import os
+import json  # NEW: Required for saving formatting
 from config import APP_NAME, COLORS
 from database import DatabaseManager
 from whiteboard import Whiteboard
@@ -16,7 +17,6 @@ try:
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Image as PDFImage
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_JUSTIFY, TA_CENTER
     HAS_PDF = True
 except ImportError:
     HAS_PDF = False
@@ -55,7 +55,7 @@ class NoteApp(tk.Tk):
         self.default_font = font.Font(family="Segoe UI", size=10)
         self.bold_font = font.Font(family="Segoe UI", size=10, weight="bold")
         self.italic_font = font.Font(family="Segoe UI", size=10, slant="italic")
-        self.heading_font = font.Font(family="Segoe UI", size=16, weight="bold") # Larger heading
+        self.heading_font = font.Font(family="Segoe UI", size=16, weight="bold")
         
         style.configure("TFrame", background=COLORS["bg_main"])
         style.configure("Main.TFrame", background=COLORS["bg_main"])
@@ -155,7 +155,6 @@ class NoteApp(tk.Tk):
         self.current_project = pid
         self.current_note_id = None
         
-        # Header
         header = ttk.Frame(self.container, padding=(20, 10))
         header.pack(fill="x")
         ttk.Button(header, text="← Back", command=self.show_projects_view, width=8).pack(side="left", padx=(0, 20))
@@ -171,11 +170,9 @@ class NoteApp(tk.Tk):
         else:
             ttk.Button(tools_frame, text="Lock", style="Tool.TButton", command=self.set_password_dialog).pack(side="left", padx=5)
         
-        # Main Layout
         paned = tk.PanedWindow(self.container, orient=tk.HORIZONTAL, bg=COLORS["bg_sec"], sashwidth=4)
         paned.pack(fill="both", expand=True, padx=20, pady=(10, 20))
         
-        # 1. Notes List Pane
         pane_notes = tk.Frame(paned, bg=COLORS["bg_main"])
         paned.add(pane_notes, width=250)
         n_tool = tk.Frame(pane_notes, bg=COLORS["bg_sec"], pady=5, padx=5)
@@ -187,23 +184,19 @@ class NoteApp(tk.Tk):
         self.note_scroll = ScrollableFrame(pane_notes, bg_color=COLORS["bg_main"])
         self.note_scroll.pack(fill="both", expand=True)
         
-        # 2. Central Pane
         pane_center = tk.Frame(paned, bg=COLORS["white"])
         paned.add(pane_center, width=550)
         
         self.notebook_tabs = ttk.Notebook(pane_center)
         self.notebook_tabs.pack(fill="both", expand=True)
         
-        # Tab 1: Text Editor
         self.tab_editor = tk.Frame(self.notebook_tabs, bg="white")
         self.notebook_tabs.add(self.tab_editor, text=" 📝 Editor ")
         self._setup_editor_ui(self.tab_editor)
         
-        # Tab 2: Whiteboard
         self.tab_whiteboard = Whiteboard(self.notebook_tabs)
         self.notebook_tabs.add(self.tab_whiteboard, text=" ✏️ Notepad ")
 
-        # 3. Todo Pane
         pane_todo = tk.Frame(paned, bg=COLORS["bg_main"])
         paned.add(pane_todo, width=250)
         self._setup_todo_ui(pane_todo)
@@ -215,29 +208,34 @@ class NoteApp(tk.Tk):
         self.editor_toolbar = tk.Frame(parent, bg="#eee", pady=5, padx=5)
         self.editor_toolbar.pack(side="top", fill="x")
         
-        # Formatting
         fmt_frame = tk.Frame(self.editor_toolbar, bg="#eee")
         fmt_frame.pack(side="left", padx=(0, 10))
         
-        # Headings Button (NEW)
         ttk.Button(fmt_frame, text="H", width=2, style="Tool.TButton", command=self.toggle_heading).pack(side="left", padx=1)
-        
         ttk.Button(fmt_frame, text="B", width=2, style="Tool.TButton", command=lambda: self.toggle_format("bold")).pack(side="left", padx=1)
         ttk.Button(fmt_frame, text="I", width=2, style="Tool.TButton", command=lambda: self.toggle_format("italic")).pack(side="left", padx=1)
         
-        # Undo/Redo Buttons
+        # --- NEW: Menu Button for Lists ---
+        self.list_mb = ttk.Menubutton(fmt_frame, text="List Options ▼", direction='below')
+        self.list_mb.pack(side="left", padx=5)
+        self.list_menu = tk.Menu(self.list_mb, tearoff=0)
+        self.list_mb.configure(menu=self.list_menu)
+        
+        self.list_menu.add_command(label="• Bullet List", command=lambda: self.insert_smart_list("bullet"))
+        self.list_menu.add_command(label="1. Numeric List", command=lambda: self.insert_smart_list("number"))
+        self.list_menu.add_command(label="A. Alpha Upper", command=lambda: self.insert_smart_list("alpha_upper"))
+        self.list_menu.add_command(label="a. Alpha Lower", command=lambda: self.insert_smart_list("alpha_lower"))
+
         ttk.Button(fmt_frame, text="↶", width=2, style="Tool.TButton", command=self.undo_action).pack(side="left", padx=1)
         ttk.Button(fmt_frame, text="↷", width=2, style="Tool.TButton", command=self.redo_action).pack(side="left", padx=1)
 
-        # Search
         search_frame = tk.Frame(self.editor_toolbar, bg="#eee")
         search_frame.pack(side="left", padx=10)
         self.editor_search_var = tk.StringVar()
-        self.editor_search_var.trace("w", self.on_search_type)
+        self.editor_search_var.trace("w", self.on_search_type) 
         self.e_editor_search = ttk.Entry(search_frame, textvariable=self.editor_search_var, width=15)
         self.e_editor_search.pack(side="left")
         
-        # Text Widget
         self.editor_text = tk.Text(parent, font=self.default_font, wrap="word", bd=0, padx=20, pady=20, 
                                    bg=COLORS["white"], fg=COLORS["fg_text"],
                                    undo=True, maxundo=5, autoseparators=False)
@@ -245,11 +243,13 @@ class NoteApp(tk.Tk):
         
         self.editor_text.tag_configure("bold", font=self.bold_font)
         self.editor_text.tag_configure("italic", font=self.italic_font)
-        self.editor_text.tag_configure("heading", font=self.heading_font, spacing3=10) # Heading style
+        self.editor_text.tag_configure("heading", font=self.heading_font, spacing3=10)
+        self.editor_text.tag_configure("search_hi", background=COLORS["search_active"], foreground="white") 
         self.editor_text.tag_configure("misspelled", foreground="red", underline=True)
+        self.editor_text.tag_raise("search_hi")
+        self.editor_text.tag_raise("misspelled")
         
-        # Bindings
-        self.editor_text.bind("<KeyRelease>", self.on_text_activity)
+        self.editor_text.bind("<KeyRelease>", self.on_key_release)
         self.editor_text.bind("<Key>", self.on_key_press)
         self.editor_text.bind("<Control-z>", lambda e: self.undo_action())
         self.editor_text.bind("<Control-y>", lambda e: self.redo_action())
@@ -275,15 +275,73 @@ class NoteApp(tk.Tk):
         self.todo_scroll = ScrollableFrame(parent, bg_color=COLORS["bg_main"])
         self.todo_scroll.pack(fill="both", expand=True)
 
-    # --- UNDO / REDO / SENTENCE / SPELL CHECK ---
+    # --- LIST LOGIC (Updated) ---
+    def insert_smart_list(self, list_type):
+        try:
+            start = self.editor_text.index("sel.first")
+            end = self.editor_text.index("sel.last")
+        except:
+            start = self.editor_text.index("insert")
+            end = start
+            
+        start_line = f"{start} linestart"
+        end_line = f"{end} lineend"
+        
+        # Get selected text
+        content = self.editor_text.get(start_line, end_line)
+        lines = content.split('\n')
+        new_lines = []
+
+        # Regex to strip existing list prefixes (e.g., "1. ", "A. ", "• ")
+        prefix_pattern = r"^\s*(•|\d+\.|[A-Za-z]\.)\s*"
+
+        for i, line in enumerate(lines):
+            clean_text = re.sub(prefix_pattern, "", line)
+            
+            # Skip empty lines if multiple lines selected
+            if not clean_text.strip() and len(lines) > 1:
+                new_lines.append("")
+                continue
+            
+            if list_type == "bullet":
+                new_prefix = "• "
+            elif list_type == "number":
+                new_prefix = f"{i+1}. "
+            elif list_type == "alpha_upper":
+                new_prefix = f"{chr(65 + i)}. "  # A, B, C...
+            elif list_type == "alpha_lower":
+                new_prefix = f"{chr(97 + i)}. "  # a, b, c...
+            else:
+                new_prefix = ""
+
+            new_lines.append(f"{new_prefix}{clean_text}")
+
+        self.editor_text.delete(start_line, end_line)
+        self.editor_text.insert(start_line, "\n".join(new_lines))
+        self.auto_save_current()
+
+    # --- UNDO / REDO / SENTENCE ---
     def on_key_press(self, event):
-        # 1. Sentence logic for Undo
         if event.char in ['.', '!', '?', '\n']:
             self.editor_text.edit_separator()
-        
-        # 2. Trigger Auto-Spell Check on Space or Enter
-        if event.keysym in ['space', 'Return', 'period', 'comma']:
-            self.after(50, self.check_current_word) # Small delay to let char insert first
+
+    def on_key_release(self, event):
+        if event.keysym in ['space', 'Return', 'period', 'comma', 'semicolon']:
+            self.check_previous_word()
+
+    def check_previous_word(self):
+        if not HAS_SPELL: return
+        if self.editor_text.compare("insert-1c", "<", "1.0"): return
+        target_index = "insert-2c"
+        if self.editor_text.compare(target_index, "<", "1.0"): return
+        word_start = self.editor_text.index(f"{target_index} wordstart")
+        word_end = self.editor_text.index(f"{target_index} wordend")
+        word = self.editor_text.get(word_start, word_end)
+        clean_word = re.sub(r'[^\w]', '', word)
+        if clean_word and spell.unknown([clean_word]):
+            self.editor_text.tag_add("misspelled", word_start, word_end)
+        else:
+            self.editor_text.tag_remove("misspelled", word_start, word_end)
 
     def undo_action(self, event=None):
         try: self.editor_text.edit_undo()
@@ -295,59 +353,46 @@ class NoteApp(tk.Tk):
         except: pass
         return "break"
 
-    def check_current_word(self):
-        """Checks the word directly before the cursor"""
-        if not HAS_SPELL: return
-        
-        # Get position of insert
-        pos = self.editor_text.index("insert")
-        # Find start of current word
-        start = self.editor_text.search(r"\y", pos, backwards=True, regexp=True)
-        if not start: return
-        
-        # Get the word
-        word_text = self.editor_text.get(start, pos).strip()
-        clean_word = re.sub(r'[^\w]', '', word_text) # Remove punctuation
-        
-        if clean_word and spell.unknown([clean_word]):
-            # If unknown, tag it
-            self.editor_text.tag_add("misspelled", start, pos)
-        else:
-            # If known or empty, remove tag (in case it was previously red)
-            self.editor_text.tag_remove("misspelled", start, pos)
+    def on_search_type(self, *args):
+        self.editor_text.tag_remove("search_hi", "1.0", "end")
+        query = self.editor_search_var.get()
+        if not query: return
+        start_pos = "1.0"
+        first_match = None
+        while True:
+            pos = self.editor_text.search(query, start_pos, stopindex="end", nocase=True)
+            if not pos: break
+            end_pos = f"{pos}+{len(query)}c"
+            self.editor_text.tag_add("search_hi", pos, end_pos)
+            if not first_match: first_match = pos
+            start_pos = end_pos
+        if first_match:
+            self.editor_text.see(first_match)
 
-    # --- HELPER STUBS ---
     def toggle_format(self, tag):
         try: 
             current = self.editor_text.tag_names("sel.first")
             if tag in current: self.editor_text.tag_remove(tag, "sel.first", "sel.last")
             else: self.editor_text.tag_add(tag, "sel.first", "sel.last")
+            self.auto_save_current() # Save immediately on toggle
         except: pass
 
     def toggle_heading(self):
-        """Toggles Heading style on the current line or selection"""
         try:
-            # Check if text is selected
             try:
                 start = self.editor_text.index("sel.first")
                 end = self.editor_text.index("sel.last")
             except tk.TclError:
-                # If no selection, apply to current line
                 start = self.editor_text.index("insert linestart")
                 end = self.editor_text.index("insert lineend")
-
-            # Check if tag is present
             current_tags = self.editor_text.tag_names(start)
             if "heading" in current_tags:
                 self.editor_text.tag_remove("heading", start, end)
             else:
                 self.editor_text.tag_add("heading", start, end)
+            self.auto_save_current() # Save immediately
         except Exception: pass
         
-    def on_text_activity(self, event): pass
-    def on_search_type(self, *args): pass
-    
-    # --- NOTES LOGIC ---
     def refresh_notes_list(self):
         for w in self.note_scroll.scrollable_frame.winfo_children(): w.destroy()
         notes = self.db.get_notes(self.current_project, self.note_search_var.get())
@@ -357,15 +402,46 @@ class NoteApp(tk.Tk):
             f = tk.Frame(item, bg=COLORS["white"], padx=8, pady=8)
             f.pack(fill="x")
             tk.Label(f, text=title, font=("Segoe UI", 10, "bold"), bg=COLORS["white"], anchor="w").pack(fill="x")
-            
             def load(e, n=nid): self.auto_save_current(); self.load_editor(n)
             for w in [item, f] + f.winfo_children(): w.bind("<Button-1>", load)
+
+    # --- SERIALIZATION LOGIC (The Fix for Persistence) ---
+    def get_content_snapshot(self):
+        """Returns JSON with text and tag positions"""
+        text = self.editor_text.get("1.0", "end-1c")
+        tags_data = []
+        # Only save persistent tags (ignore misspelled, search_hi)
+        for tag in ["bold", "italic", "heading"]:
+            ranges = self.editor_text.tag_ranges(tag)
+            # Ranges come as (start, end, start, end...), convert to strings
+            if ranges:
+                tags_data.append({
+                    "name": tag,
+                    "ranges": [str(r) for r in ranges]
+                })
+        return json.dumps({"text": text, "tags": tags_data})
+
+    def apply_content_snapshot(self, json_str):
+        """Parses JSON and applies text + tags"""
+        self.editor_text.delete("1.0", "end")
+        try:
+            data = json.loads(json_str)
+            self.editor_text.insert("1.0", data.get("text", ""))
+            
+            for tag_info in data.get("tags", []):
+                tag_name = tag_info["name"]
+                ranges = tag_info["ranges"]
+                # Apply ranges in pairs (start, end)
+                for i in range(0, len(ranges), 2):
+                    self.editor_text.tag_add(tag_name, ranges[i], ranges[i+1])
+        except (json.JSONDecodeError, TypeError):
+            # Fallback for old plain-text notes
+            self.editor_text.insert("1.0", json_str)
 
     def load_editor(self, nid):
         self.current_note_id = nid
         content = self.db.get_note_content(nid)
-        self.editor_text.delete("1.0", "end")
-        self.editor_text.insert("1.0", content)
+        self.apply_content_snapshot(content) # Changed to use deserializer
         self.editor_text.edit_reset()
 
     def create_new_note(self):
@@ -376,11 +452,11 @@ class NoteApp(tk.Tk):
 
     def auto_save_current(self):
         if self.current_note_id:
-            content = self.editor_text.get("1.0", "end-1c")
+            # Changed to use serializer
+            content = self.get_content_snapshot()
             self.db.update_note(self.current_note_id, content)
             self.refresh_notes_list()
 
-    # --- PDF EXPORT ---
     def open_export_dialog(self):
         d = tk.Toplevel(self)
         d.title("Export PDF")
@@ -388,47 +464,35 @@ class NoteApp(tk.Tk):
 
     def generate_pdf_export(self):
         if not HAS_PDF: return show_msg(self, "Error", "Install 'reportlab' first.", True)
-        
         path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
         if not path: return
-
         try:
             doc = SimpleDocTemplate(path, pagesize=letter)
             styles = getSampleStyleSheet()
             story = []
-            
             if self.current_note_id:
-                # Grab text and look for tags to preserve simple styling
                 start_index = "1.0"
                 while True:
                     text_segment = self.editor_text.get(start_index, f"{start_index} lineend")
-                    if not text_segment: break # End of text
-                    
-                    # Detect if this line is a heading
+                    if not text_segment: break
                     tags = self.editor_text.tag_names(start_index)
                     style = styles['Heading1'] if "heading" in tags else styles['BodyText']
-                    
                     story.append(Paragraph(text_segment, style))
                     story.append(Spacer(1, 6))
-                    
-                    # Move to next line
                     start_index = self.editor_text.index(f"{start_index} + 1 line")
                     if self.editor_text.compare(start_index, "==", "end"): break
-            
             draw_path = self.tab_whiteboard.get_image_path_for_pdf()
             if draw_path:
                 story.append(PageBreak())
                 story.append(Paragraph("Attached Sketch:", styles['Heading2']))
                 story.append(Spacer(1, 10))
                 story.append(PDFImage(draw_path, width=400, height=300))
-            
             doc.build(story)
             if draw_path: os.remove(draw_path)
             show_msg(self, "Success", "PDF Exported Successfully!")
         except Exception as e:
             show_msg(self, "Error", str(e), True)
 
-    # --- TODO Logic ---
     def add_task(self):
         t = self.e_task.get()
         d = self.e_date.get()
@@ -444,7 +508,6 @@ class NoteApp(tk.Tk):
             tk.Label(row, text=task, bg="white").pack(side="left")
             tk.Label(row, text="✕", fg="#aaa", bg="white").pack(side="right", padx=5)
 
-    # --- PASSWORDS ---
     def set_password_dialog(self): 
         p = ask_string(self, "Set", "Password:", show="*")
         if p: self.db.set_project_password(self.current_project, p); show_msg(self, "Done", "Locked.")
