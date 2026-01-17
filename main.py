@@ -55,7 +55,7 @@ class NoteApp(tk.Tk):
         self.default_font = font.Font(family="Segoe UI", size=10)
         self.bold_font = font.Font(family="Segoe UI", size=10, weight="bold")
         self.italic_font = font.Font(family="Segoe UI", size=10, slant="italic")
-        self.heading_font = font.Font(family="Segoe UI", size=14, weight="bold")
+        self.heading_font = font.Font(family="Segoe UI", size=16, weight="bold") # Larger heading
         
         style.configure("TFrame", background=COLORS["bg_main"])
         style.configure("Main.TFrame", background=COLORS["bg_main"])
@@ -76,7 +76,7 @@ class NoteApp(tk.Tk):
             self.auto_save_current()
         for widget in self.container.winfo_children(): widget.destroy()
 
-    # --- PROJECT VIEW (Same as before) ---
+    # --- PROJECT VIEW ---
     def show_projects_view(self):
         self.clear_container()
         self.current_note_id = None
@@ -171,7 +171,7 @@ class NoteApp(tk.Tk):
         else:
             ttk.Button(tools_frame, text="Lock", style="Tool.TButton", command=self.set_password_dialog).pack(side="left", padx=5)
         
-        # Main Layout: Notes List | Editor/Whiteboard | Todo
+        # Main Layout
         paned = tk.PanedWindow(self.container, orient=tk.HORIZONTAL, bg=COLORS["bg_sec"], sashwidth=4)
         paned.pack(fill="both", expand=True, padx=20, pady=(10, 20))
         
@@ -187,7 +187,7 @@ class NoteApp(tk.Tk):
         self.note_scroll = ScrollableFrame(pane_notes, bg_color=COLORS["bg_main"])
         self.note_scroll.pack(fill="both", expand=True)
         
-        # 2. Central Pane (Tabs: Text Editor & Whiteboard)
+        # 2. Central Pane
         pane_center = tk.Frame(paned, bg=COLORS["white"])
         paned.add(pane_center, width=550)
         
@@ -218,13 +218,14 @@ class NoteApp(tk.Tk):
         # Formatting
         fmt_frame = tk.Frame(self.editor_toolbar, bg="#eee")
         fmt_frame.pack(side="left", padx=(0, 10))
+        
+        # Headings Button (NEW)
+        ttk.Button(fmt_frame, text="H", width=2, style="Tool.TButton", command=self.toggle_heading).pack(side="left", padx=1)
+        
         ttk.Button(fmt_frame, text="B", width=2, style="Tool.TButton", command=lambda: self.toggle_format("bold")).pack(side="left", padx=1)
         ttk.Button(fmt_frame, text="I", width=2, style="Tool.TButton", command=lambda: self.toggle_format("italic")).pack(side="left", padx=1)
         
-        # Spell Check Button
-        ttk.Button(fmt_frame, text="abc✓", width=4, style="Tool.TButton", command=self.check_spelling).pack(side="left", padx=5)
-        
-        # Undo/Redo Buttons (Visual cues)
+        # Undo/Redo Buttons
         ttk.Button(fmt_frame, text="↶", width=2, style="Tool.TButton", command=self.undo_action).pack(side="left", padx=1)
         ttk.Button(fmt_frame, text="↷", width=2, style="Tool.TButton", command=self.redo_action).pack(side="left", padx=1)
 
@@ -237,7 +238,6 @@ class NoteApp(tk.Tk):
         self.e_editor_search.pack(side="left")
         
         # Text Widget
-        # undo=True enables built-in stack. maxundo=5 limits depth. autoseparators=False lets us group manually.
         self.editor_text = tk.Text(parent, font=self.default_font, wrap="word", bd=0, padx=20, pady=20, 
                                    bg=COLORS["white"], fg=COLORS["fg_text"],
                                    undo=True, maxundo=5, autoseparators=False)
@@ -245,6 +245,7 @@ class NoteApp(tk.Tk):
         
         self.editor_text.tag_configure("bold", font=self.bold_font)
         self.editor_text.tag_configure("italic", font=self.italic_font)
+        self.editor_text.tag_configure("heading", font=self.heading_font, spacing3=10) # Heading style
         self.editor_text.tag_configure("misspelled", foreground="red", underline=True)
         
         # Bindings
@@ -274,42 +275,79 @@ class NoteApp(tk.Tk):
         self.todo_scroll = ScrollableFrame(parent, bg_color=COLORS["bg_main"])
         self.todo_scroll.pack(fill="both", expand=True)
 
-    # --- UNDO / REDO / SENTENCE LOGIC ---
+    # --- UNDO / REDO / SENTENCE / SPELL CHECK ---
     def on_key_press(self, event):
-        # We manually add a separator to the undo stack only when a sentence ends.
-        # This groups all typing between sentences into one "Undo" step.
+        # 1. Sentence logic for Undo
         if event.char in ['.', '!', '?', '\n']:
             self.editor_text.edit_separator()
+        
+        # 2. Trigger Auto-Spell Check on Space or Enter
+        if event.keysym in ['space', 'Return', 'period', 'comma']:
+            self.after(50, self.check_current_word) # Small delay to let char insert first
 
     def undo_action(self, event=None):
         try: self.editor_text.edit_undo()
-        except: pass # Stack empty
-        return "break" # Prevent default behavior duplication
+        except: pass
+        return "break"
 
     def redo_action(self, event=None):
         try: self.editor_text.edit_redo()
         except: pass
         return "break"
 
-    # --- SPELL CHECKER ---
-    def check_spelling(self):
-        if not HAS_SPELL: return show_msg(self, "Error", "Install 'pyspellchecker' to use this feature.", True)
+    def check_current_word(self):
+        """Checks the word directly before the cursor"""
+        if not HAS_SPELL: return
         
-        self.editor_text.tag_remove("misspelled", "1.0", "end")
-        text = self.editor_text.get("1.0", "end")
-        words = re.findall(r"\b\w+\b", text)
-        unknown = spell.unknown(words)
+        # Get position of insert
+        pos = self.editor_text.index("insert")
+        # Find start of current word
+        start = self.editor_text.search(r"\y", pos, backwards=True, regexp=True)
+        if not start: return
         
-        for word in unknown:
-            start_pos = "1.0"
-            while True:
-                start_pos = self.editor_text.search(word, start_pos, stopindex="end", nocase=True)
-                if not start_pos: break
-                end_pos = f"{start_pos}+{len(word)}c"
-                self.editor_text.tag_add("misspelled", start_pos, end_pos)
-                start_pos = end_pos
+        # Get the word
+        word_text = self.editor_text.get(start, pos).strip()
+        clean_word = re.sub(r'[^\w]', '', word_text) # Remove punctuation
+        
+        if clean_word and spell.unknown([clean_word]):
+            # If unknown, tag it
+            self.editor_text.tag_add("misspelled", start, pos)
+        else:
+            # If known or empty, remove tag (in case it was previously red)
+            self.editor_text.tag_remove("misspelled", start, pos)
 
-    # --- NOTES LOGIC (Simplified for brevity, same as previous) ---
+    # --- HELPER STUBS ---
+    def toggle_format(self, tag):
+        try: 
+            current = self.editor_text.tag_names("sel.first")
+            if tag in current: self.editor_text.tag_remove(tag, "sel.first", "sel.last")
+            else: self.editor_text.tag_add(tag, "sel.first", "sel.last")
+        except: pass
+
+    def toggle_heading(self):
+        """Toggles Heading style on the current line or selection"""
+        try:
+            # Check if text is selected
+            try:
+                start = self.editor_text.index("sel.first")
+                end = self.editor_text.index("sel.last")
+            except tk.TclError:
+                # If no selection, apply to current line
+                start = self.editor_text.index("insert linestart")
+                end = self.editor_text.index("insert lineend")
+
+            # Check if tag is present
+            current_tags = self.editor_text.tag_names(start)
+            if "heading" in current_tags:
+                self.editor_text.tag_remove("heading", start, end)
+            else:
+                self.editor_text.tag_add("heading", start, end)
+        except Exception: pass
+        
+    def on_text_activity(self, event): pass
+    def on_search_type(self, *args): pass
+    
+    # --- NOTES LOGIC ---
     def refresh_notes_list(self):
         for w in self.note_scroll.scrollable_frame.winfo_children(): w.destroy()
         notes = self.db.get_notes(self.current_project, self.note_search_var.get())
@@ -328,7 +366,7 @@ class NoteApp(tk.Tk):
         content = self.db.get_note_content(nid)
         self.editor_text.delete("1.0", "end")
         self.editor_text.insert("1.0", content)
-        self.editor_text.edit_reset() # Clear undo stack on new note load
+        self.editor_text.edit_reset()
 
     def create_new_note(self):
         self.auto_save_current()
@@ -342,7 +380,7 @@ class NoteApp(tk.Tk):
             self.db.update_note(self.current_note_id, content)
             self.refresh_notes_list()
 
-    # --- PDF EXPORT (Updated to include Drawing) ---
+    # --- PDF EXPORT ---
     def open_export_dialog(self):
         d = tk.Toplevel(self)
         d.title("Export PDF")
@@ -359,40 +397,38 @@ class NoteApp(tk.Tk):
             styles = getSampleStyleSheet()
             story = []
             
-            # 1. Add Text
             if self.current_note_id:
-                text = self.editor_text.get("1.0", "end-1c")
-                for line in text.split('\n'):
-                    story.append(Paragraph(line, styles['BodyText']))
+                # Grab text and look for tags to preserve simple styling
+                start_index = "1.0"
+                while True:
+                    text_segment = self.editor_text.get(start_index, f"{start_index} lineend")
+                    if not text_segment: break # End of text
+                    
+                    # Detect if this line is a heading
+                    tags = self.editor_text.tag_names(start_index)
+                    style = styles['Heading1'] if "heading" in tags else styles['BodyText']
+                    
+                    story.append(Paragraph(text_segment, style))
                     story.append(Spacer(1, 6))
+                    
+                    # Move to next line
+                    start_index = self.editor_text.index(f"{start_index} + 1 line")
+                    if self.editor_text.compare(start_index, "==", "end"): break
             
-            # 2. Add Drawing (if any)
             draw_path = self.tab_whiteboard.get_image_path_for_pdf()
             if draw_path:
                 story.append(PageBreak())
                 story.append(Paragraph("Attached Sketch:", styles['Heading2']))
                 story.append(Spacer(1, 10))
-                # Resize image to fit page width (approx 400px)
                 story.append(PDFImage(draw_path, width=400, height=300))
             
             doc.build(story)
-            if draw_path: os.remove(draw_path) # Clean up temp file
+            if draw_path: os.remove(draw_path)
             show_msg(self, "Success", "PDF Exported Successfully!")
         except Exception as e:
             show_msg(self, "Error", str(e), True)
 
-    # --- HELPER STUBS ---
-    def toggle_format(self, tag):
-        try: 
-            current = self.editor_text.tag_names("sel.first")
-            if tag in current: self.editor_text.tag_remove(tag, "sel.first", "sel.last")
-            else: self.editor_text.tag_add(tag, "sel.first", "sel.last")
-        except: pass
-        
-    def on_text_activity(self, event): pass
-    def on_search_type(self, *args): pass
-    
-    # --- TODO Logic (Same as before) ---
+    # --- TODO Logic ---
     def add_task(self):
         t = self.e_task.get()
         d = self.e_date.get()
