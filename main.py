@@ -153,6 +153,13 @@ class NoteApp(tk.Tk):
         if ask_yes_no(self, "Delete Notebook", "Are you sure? This will delete all notes and tasks inside."):
             self.db.delete_project(pid)
             self.refresh_project_list()
+    def remove_password_dialog(self):
+        if ask_yes_no(self, "Remove Lock", "Are you sure you want to remove the password protection?"):
+            # Set the password to None or empty string to remove it
+            self.db.set_project_password(self.current_project, "")
+            show_msg(self, "Success", "Password removed.")
+            
+            self.show_projects_view()
 
     # --- PROJECT DETAIL VIEW ---
     def open_project_detail(self, pid, name):
