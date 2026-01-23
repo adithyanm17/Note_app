@@ -143,6 +143,18 @@ class DatabaseManager:
         self.cursor.execute("INSERT INTO todos (project_id, task, due_date, created_at) VALUES (?, ?, ?, ?)",
                             (project_id, task, due_date, datetime.now().strftime("%Y-%m-%d")))
         self.conn.commit()
+        # --- Add these to database.py ---
+
+    def get_project_by_id(self, project_id):
+        # Fetches current name and description for the edit dialog
+        self.cursor.execute("SELECT name, description FROM projects WHERE id = ?", (project_id,))
+        return self.cursor.fetchone()
+
+    def update_project(self, project_id, name, description):
+        # Updates the record in the database
+        self.cursor.execute("UPDATE projects SET name = ?, description = ? WHERE id = ?", 
+                            (name, description, project_id))
+        self.conn.commit()
 
     def get_todos(self, project_id):
         self.cursor.execute("""

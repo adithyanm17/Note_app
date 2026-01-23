@@ -160,6 +160,53 @@ class NoteApp(tk.Tk):
             show_msg(self, "Success", "Password removed.")
             
             self.show_projects_view()
+    # In main.py (add this method to NoteApp class)
+
+    def edit_project_details_dialog(self):
+        # 1. Fetch current details from DB
+        data = self.db.get_project_by_id(self.current_project)
+        if not data: return
+        current_name, current_desc = data
+
+        # 2. Create a popup window
+        d = tk.Toplevel(self)
+        d.title("Edit Notebook Details")
+        d.geometry("400x250")
+        d.configure(bg=COLORS["bg_main"])
+        
+        # Center the window
+        x = self.winfo_x() + (self.winfo_width() // 2) - 200
+        y = self.winfo_y() + (self.winfo_height() // 2) - 125
+        d.geometry(f"+{x}+{y}")
+
+        # 3. UI Inputs
+        tk.Label(d, text="Notebook Name:", bg=COLORS["bg_main"], font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(20, 5))
+        e_name = ttk.Entry(d, width=40)
+        e_name.insert(0, current_name)
+        e_name.pack(padx=20, fill="x")
+
+        tk.Label(d, text="Description:", bg=COLORS["bg_main"], font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(15, 5))
+        e_desc = ttk.Entry(d, width=40)
+        e_desc.insert(0, current_desc)
+        e_desc.pack(padx=20, fill="x")
+
+        # 4. Save Function
+        def save_changes():
+            new_name = e_name.get().strip()
+            new_desc = e_desc.get().strip()
+            if new_name:
+                self.db.update_project(self.current_project, new_name, new_desc)
+                d.destroy()
+                # Refresh the view to show the new name
+                self.open_project_detail(self.current_project, new_name)
+            else:
+                show_msg(self, "Error", "Name cannot be empty", True)
+
+        # 5. Buttons
+        btn_frame = tk.Frame(d, bg=COLORS["bg_main"], pady=20)
+        btn_frame.pack(fill="x")
+        ttk.Button(btn_frame, text="Save", command=save_changes).pack(side="right", padx=20)
+        ttk.Button(btn_frame, text="Cancel", command=d.destroy).pack(side="right", padx=5)
 
     # --- PROJECT DETAIL VIEW ---
     def open_project_detail(self, pid, name):
@@ -171,7 +218,11 @@ class NoteApp(tk.Tk):
         header.pack(fill="x")
         ttk.Button(header, text="← Back", command=self.show_projects_view, width=8).pack(side="left", padx=(0, 20))
         ttk.Label(header, text=name, style="Header.TLabel").pack(side="left")
+        tools_frame = ttk.Frame(header)
+        tools_frame.pack(side="right")
         
+        ttk.Button(tools_frame, text="Edit Info", style="Tool.TButton", command=self.edit_project_details_dialog).pack(side="left", padx=5)
+
         tools_frame = ttk.Frame(header)
         tools_frame.pack(side="right")
         ttk.Button(tools_frame, text="Export PDF", style="Tool.TButton", command=self.open_export_dialog).pack(side="left", padx=5)
