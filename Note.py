@@ -111,6 +111,10 @@ class NoteApp(tk.Tk):
         d = tk.Toplevel(self)
         d.title("Settings")
         d.geometry("500x550")
+        try: d.iconbitmap("icon.ico")
+        except: pass
+        d.resizable(False, False)
+
         d.configure(bg=COLORS["bg_main"])
         
         # --- Styles for Settings ---
