@@ -2,6 +2,8 @@
 import tkinter as tk
 from tkinter import ttk, font, filedialog
 import re
+import shutil
+import zipfile
 import os
 import json
 import glob
@@ -41,18 +43,42 @@ class NoteApp(tk.Tk):
         self._setup_styles()
         self.db = DatabaseManager()
         self.current_project = None
-        self.current_note_id = None
         
+        # ... (keep existing variable inits) ...
         self.responsive_editor_btns = []
         self.display_mode = "long"
         
-        # Search Vars
-        self.search_matches = [] 
-        self.current_match_index = -1
-        
         self.container = ttk.Frame(self, style="Main.TFrame")
         self.container.pack(fill="both", expand=True)
-        self.show_projects_view()
+
+        # --- NEW: Check App Password ---
+        app_pass = self.db.get_setting("app_password")
+        if app_pass:
+            self.show_login_screen(app_pass)
+        else:
+            self.show_projects_view()
+
+    def show_login_screen(self, real_pass):
+        self.clear_container()
+        f = tk.Frame(self.container, bg=COLORS["bg_main"])
+        f.place(relx=0.5, rely=0.5, anchor="center")
+        
+        tk.Label(f, text="🔒 App Locked", font=("Segoe UI", 20, "bold"), bg=COLORS["bg_main"], fg=COLORS["accent"]).pack(pady=20)
+        tk.Label(f, text="Enter Password:", bg=COLORS["bg_main"]).pack()
+        
+        e_pass = ttk.Entry(f, show="*", width=30)
+        e_pass.pack(pady=10)
+        e_pass.focus()
+        
+        def check(event=None):
+            if e_pass.get() == real_pass:
+                self.show_projects_view()
+            else:
+                show_msg(self, "Error", "Incorrect Password", True)
+                e_pass.delete(0, "end")
+        
+        ttk.Button(f, text="Unlock", command=check).pack(pady=10)
+        e_pass.bind("<Return>", check)
 
     def _setup_styles(self):
         style = ttk.Style()
@@ -81,25 +107,146 @@ class NoteApp(tk.Tk):
             self.auto_save_current()
         for widget in self.container.winfo_children(): widget.destroy()
 
+    def open_settings_window(self):
+        d = tk.Toplevel(self)
+        d.title("Settings")
+        d.geometry("500x550")
+        d.configure(bg=COLORS["bg_main"])
+        
+        # --- Styles for Settings ---
+        lbl_style = ("Segoe UI", 10, "bold")
+        
+        # --- Section 1: Personal Info ---
+        tk.Label(d, text="Personal Info", font=("Segoe UI", 14, "bold"), bg=COLORS["bg_main"], fg=COLORS["accent"]).pack(anchor="w", padx=20, pady=(20, 10))
+        
+        f_info = tk.Frame(d, bg=COLORS["bg_main"], padx=20)
+        f_info.pack(fill="x")
+        
+        tk.Label(f_info, text="Name:", bg=COLORS["bg_main"], font=lbl_style).grid(row=0, column=0, sticky="w", pady=5)
+        e_name = ttk.Entry(f_info, width=30)
+        e_name.grid(row=0, column=1, padx=10, pady=5)
+        e_name.insert(0, self.db.get_setting("user_name"))
+        
+        tk.Label(f_info, text="Email:", bg=COLORS["bg_main"], font=lbl_style).grid(row=1, column=0, sticky="w", pady=5)
+        e_mail = ttk.Entry(f_info, width=30)
+        e_mail.grid(row=1, column=1, padx=10, pady=5)
+        e_mail.insert(0, self.db.get_setting("user_email"))
+        
+        def save_info():
+            self.db.set_setting("user_name", e_name.get())
+            self.db.set_setting("user_email", e_mail.get())
+            show_msg(self, "Saved", "Personal info updated!")
+            self.show_projects_view() # Refresh avatar
+            d.destroy()
+            
+        ttk.Button(f_info, text="Save Info", command=save_info).grid(row=2, column=1, sticky="e", pady=10)
+        
+        ttk.Separator(d, orient="horizontal").pack(fill="x", padx=20, pady=15)
+
+        # --- Section 2: Security ---
+        tk.Label(d, text="App Security", font=("Segoe UI", 14, "bold"), bg=COLORS["bg_main"], fg=COLORS["accent"]).pack(anchor="w", padx=20, pady=(0, 10))
+        f_sec = tk.Frame(d, bg=COLORS["bg_main"], padx=20)
+        f_sec.pack(fill="x")
+        
+        def set_app_pass():
+            p = ask_string(self, "Set Password", "Enter new App Password:", show="*")
+            if p:
+                self.db.set_setting("app_password", p)
+                show_msg(self, "Done", "App password set.")
+        
+        def remove_app_pass():
+            if ask_yes_no(self, "Remove", "Remove App Password?"):
+                self.db.set_setting("app_password", "")
+                show_msg(self, "Done", "App password removed.")
+
+        ttk.Button(f_sec, text="Set App Password", command=set_app_pass).pack(side="left", padx=(0, 10))
+        ttk.Button(f_sec, text="Remove Password", command=remove_app_pass).pack(side="left")
+
+        ttk.Separator(d, orient="horizontal").pack(fill="x", padx=20, pady=15)
+
+        # --- Section 3: Backup & Restore ---
+        tk.Label(d, text="Data Management", font=("Segoe UI", 14, "bold"), bg=COLORS["bg_main"], fg=COLORS["accent"]).pack(anchor="w", padx=20, pady=(0, 10))
+        f_data = tk.Frame(d, bg=COLORS["bg_main"], padx=20)
+        f_data.pack(fill="x")
+        
+        def export_backup():
+            path = filedialog.asksaveasfilename(defaultextension=".zip", filetypes=[("Zip Archive", "*.zip")])
+            if not path: return
+            try:
+                # Zip the DB and all WB images
+                app_dir = os.path.dirname(self.db.db_path)
+                with zipfile.ZipFile(path, 'w') as zipf:
+                    zipf.write(self.db.db_path, arcname="noteapp.db")
+                    for img in glob.glob(os.path.join(app_dir, "wb_*.png")):
+                        zipf.write(img, arcname=os.path.basename(img))
+                show_msg(self, "Success", "Backup created successfully!")
+            except Exception as e:
+                show_msg(self, "Error", str(e), True)
+
+        def import_backup():
+            if not ask_yes_no(self, "Warning", "This will OVERWRITE all current data. Continue?"): return
+            path = filedialog.askopenfilename(filetypes=[("Zip Archive", "*.zip")])
+            if not path: return
+            try:
+                # 1. Close current DB connection to allow overwrite
+                self.db.conn.close()
+                
+                # 2. Extract files
+                app_dir = os.path.dirname(self.db.db_path)
+                with zipfile.ZipFile(path, 'r') as zipf:
+                    zipf.extractall(app_dir)
+                
+                # 3. Re-init Database
+                self.db = DatabaseManager() 
+                show_msg(self, "Success", "Data imported! The app will now reload.")
+                self.show_projects_view() # Reload UI
+                d.destroy()
+            except Exception as e:
+                show_msg(self, "Critical Error", f"Failed to import: {e}\nPlease restart app.", True)
+
+        ttk.Button(f_data, text="Export Backup (.zip)", command=export_backup).pack(side="left", padx=(0, 10))
+        ttk.Button(f_data, text="Import Backup (.zip)", command=import_backup).pack(side="left")
+
     # --- PROJECT VIEW ---
     def show_projects_view(self):
         self.clear_container()
         self.current_note_id = None
-        top_bar = ttk.Frame(self.container, padding=(40, 30))
+        
+        # --- Top Bar with Avatar & Settings ---
+        top_bar = ttk.Frame(self.container, padding=(40, 20))
         top_bar.pack(fill="x")
+        
+        # 1. Avatar Logic
+        user_name = self.db.get_setting("user_name")
+        initial = user_name[0].upper() if user_name else "?"
+        
+        # Create a Canvas for the circular avatar
+        avatar_canvas = tk.Canvas(top_bar, width=50, height=50, bg=COLORS["bg_main"], highlightthickness=0)
+        avatar_canvas.pack(side="left", padx=(0, 15))
+        avatar_canvas.create_oval(2, 2, 48, 48, fill=COLORS["accent"], outline="")
+        avatar_canvas.create_text(25, 25, text=initial, font=("Segoe UI", 16, "bold"), fill="white")
+        
         title_frame = ttk.Frame(top_bar)
         title_frame.pack(side="left")
-        ttk.Label(title_frame, text="My Notebooks", style="Header.TLabel").pack(anchor="w")
+        
+        # Use User Name in greeting if available
+        greeting = f"Welcome, {user_name}" if user_name else "My Notebooks"
+        ttk.Label(title_frame, text=greeting, style="Header.TLabel").pack(anchor="w")
         ttk.Label(title_frame, text="Manage your projects and thoughts", style="Sub.TLabel").pack(anchor="w")
         
         ctrl_frame = ttk.Frame(top_bar)
         ctrl_frame.pack(side="right")
+        
+        # --- NEW: Settings Button ---
+        ttk.Button(ctrl_frame, text="⚙️ Settings", command=self.open_settings_window, style="Tool.TButton").pack(side="right", padx=10)
+        
         self.proj_search_var = tk.StringVar()
         self.proj_search_var.trace("w", lambda n,i,m: self.refresh_project_list())
         e_search = ttk.Entry(ctrl_frame, textvariable=self.proj_search_var, width=25)
-        e_search.pack(side="left", padx=10)
-        ttk.Button(ctrl_frame, text="+ New Notebook", command=self.open_new_project_dialog).pack(side="left")
+        e_search.pack(side="right", padx=10)
+        ttk.Button(ctrl_frame, text="+ New Notebook", command=self.open_new_project_dialog).pack(side="right")
         
+        # ... (Rest of the list code remains the same as previous version) ...
         list_header = ttk.Frame(self.container, padding=(40, 10))
         list_header.pack(fill="x")
         ttk.Label(list_header, text="NOTE", font=("Segoe UI", 8, "bold"), width=35).pack(side="left")

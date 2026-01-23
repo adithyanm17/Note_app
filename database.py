@@ -59,6 +59,18 @@ class DatabaseManager:
         """)
         self.conn.commit()
 
+        self.cursor.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        self.conn.commit()
+
+    def set_setting(self, key, value):
+        self.cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        self.conn.commit()
+
+    def get_setting(self, key):
+        self.cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        res = self.cursor.fetchone()
+        return res[0] if res else ""
+    
     def _migrate_db(self):
         try:
             self.cursor.execute("ALTER TABLE todos ADD COLUMN due_date TEXT")
