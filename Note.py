@@ -323,6 +323,9 @@ class NoteApp(tk.Tk):
         d = tk.Toplevel(self)
         d.title("Edit Notebook Details")
         d.geometry("400x250")
+        d.resizable(False, False)
+        try: d.iconbitmap("icon.ico")
+        except: pass
         d.configure(bg=COLORS["bg_main"])
         
         # Center the window
@@ -706,7 +709,7 @@ class NoteApp(tk.Tk):
         x = self.winfo_x() + (self.winfo_width() // 2) - (d.winfo_width() // 2)
         y = self.winfo_y() + (self.winfo_height() // 2) - (d.winfo_height() // 2)
         d.geometry(f"+{x}+{y}")
-        
+
     def generate_pdf_export(self, mode):
         if not HAS_PDF: return show_msg(self, "Error", "Install 'reportlab' first.", True)
         path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
