@@ -679,11 +679,34 @@ class NoteApp(tk.Tk):
     def open_export_dialog(self):
         d = tk.Toplevel(self)
         d.title("Export PDF")
-        # --- NEW: Three Explicit Options ---
-        ttk.Button(d, text="Current Note (Text Only)", command=lambda: [d.destroy(), self.generate_pdf_export("current_text")]).pack(pady=5, padx=20, fill="x")
-        ttk.Button(d, text="Current Note (Text + Whiteboard)", command=lambda: [d.destroy(), self.generate_pdf_export("current_full")]).pack(pady=5, padx=20, fill="x")
-        ttk.Button(d, text="Whole Notebook (Text + Whiteboard)", command=lambda: [d.destroy(), self.generate_pdf_export("notebook_full")]).pack(pady=5, padx=20, fill="x")
+        d.geometry("300x190")      # Set fixed size
+        d.resizable(False, False)  # Disable resizing
+        d.configure(bg=COLORS["bg_main"]) # Match app theme
+        
+        # Set Icon
+        try: d.iconbitmap("icon.ico")
+        except: pass
 
+        # Optional: Add a small header label for better UX
+        tk.Label(d, text="Select Export Option", font=("Segoe UI", 10, "bold"), 
+                 bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=(15, 5))
+
+        # --- Three Explicit Options ---
+        ttk.Button(d, text="Current Note (Text Only)", 
+                   command=lambda: [d.destroy(), self.generate_pdf_export("current_text")]).pack(pady=5, padx=20, fill="x")
+        
+        ttk.Button(d, text="Current Note (Text + Whiteboard)", 
+                   command=lambda: [d.destroy(), self.generate_pdf_export("current_full")]).pack(pady=5, padx=20, fill="x")
+        
+        ttk.Button(d, text="Whole Notebook (Text + Whiteboard)", 
+                   command=lambda: [d.destroy(), self.generate_pdf_export("notebook_full")]).pack(pady=5, padx=20, fill="x")
+
+        # Center the dialog over the main window
+        d.update_idletasks()
+        x = self.winfo_x() + (self.winfo_width() // 2) - (d.winfo_width() // 2)
+        y = self.winfo_y() + (self.winfo_height() // 2) - (d.winfo_height() // 2)
+        d.geometry(f"+{x}+{y}")
+        
     def generate_pdf_export(self, mode):
         if not HAS_PDF: return show_msg(self, "Error", "Install 'reportlab' first.", True)
         path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
