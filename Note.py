@@ -1,4 +1,4 @@
-# main.py
+# Note.py
 import tkinter as tk
 from tkinter import ttk, font, filedialog
 import re
@@ -10,6 +10,7 @@ import glob
 from config import APP_NAME, COLORS
 from database import DatabaseManager
 from whiteboard import Whiteboard
+from tasks_ui import TaskManager  # NEW: Import the separate Task Manager module
 from ui_shared import (
     ScrollableFrame, CalendarDialog, show_msg, 
     ask_yes_no, ask_string
@@ -44,14 +45,12 @@ class NoteApp(tk.Tk):
         self.db = DatabaseManager()
         self.current_project = None
         
-        # ... (keep existing variable inits) ...
         self.responsive_editor_btns = []
         self.display_mode = "long"
         
         self.container = ttk.Frame(self, style="Main.TFrame")
         self.container.pack(fill="both", expand=True)
 
-        # --- NEW: Check App Password ---
         app_pass = self.db.get_setting("app_password")
         if app_pass:
             self.show_login_screen(app_pass)
@@ -114,24 +113,18 @@ class NoteApp(tk.Tk):
         try: d.iconbitmap("icon.ico")
         except: pass
         d.resizable(False, False)
-
         d.configure(bg=COLORS["bg_main"])
         
-        # --- Styles for Settings ---
-        lbl_style = ("Segoe UI", 10, "bold")
-        
-        # --- Section 1: Personal Info ---
         tk.Label(d, text="Personal Info", font=("Segoe UI", 14, "bold"), bg=COLORS["bg_main"], fg=COLORS["accent"]).pack(anchor="w", padx=20, pady=(20, 10))
-        
         f_info = tk.Frame(d, bg=COLORS["bg_main"], padx=20)
         f_info.pack(fill="x")
         
-        tk.Label(f_info, text="Name:", bg=COLORS["bg_main"], font=lbl_style).grid(row=0, column=0, sticky="w", pady=5)
+        tk.Label(f_info, text="Name:", bg=COLORS["bg_main"], font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=5)
         e_name = ttk.Entry(f_info, width=30)
         e_name.grid(row=0, column=1, padx=10, pady=5)
         e_name.insert(0, self.db.get_setting("user_name"))
         
-        tk.Label(f_info, text="Email:", bg=COLORS["bg_main"], font=lbl_style).grid(row=1, column=0, sticky="w", pady=5)
+        tk.Label(f_info, text="Email:", bg=COLORS["bg_main"], font=("Segoe UI", 10, "bold")).grid(row=1, column=0, sticky="w", pady=5)
         e_mail = ttk.Entry(f_info, width=30)
         e_mail.grid(row=1, column=1, padx=10, pady=5)
         e_mail.insert(0, self.db.get_setting("user_email"))
@@ -140,14 +133,12 @@ class NoteApp(tk.Tk):
             self.db.set_setting("user_name", e_name.get())
             self.db.set_setting("user_email", e_mail.get())
             show_msg(self, "Saved", "Personal info updated!")
-            self.show_projects_view() # Refresh avatar
+            self.show_projects_view()
             d.destroy()
             
         ttk.Button(f_info, text="Save Info", command=save_info).grid(row=2, column=1, sticky="e", pady=10)
-        
         ttk.Separator(d, orient="horizontal").pack(fill="x", padx=20, pady=15)
 
-        # --- Section 2: Security ---
         tk.Label(d, text="App Security", font=("Segoe UI", 14, "bold"), bg=COLORS["bg_main"], fg=COLORS["accent"]).pack(anchor="w", padx=20, pady=(0, 10))
         f_sec = tk.Frame(d, bg=COLORS["bg_main"], padx=20)
         f_sec.pack(fill="x")
@@ -168,7 +159,6 @@ class NoteApp(tk.Tk):
 
         ttk.Separator(d, orient="horizontal").pack(fill="x", padx=20, pady=15)
 
-        # --- Section 3: Backup & Restore ---
         tk.Label(d, text="Data Management", font=("Segoe UI", 14, "bold"), bg=COLORS["bg_main"], fg=COLORS["accent"]).pack(anchor="w", padx=20, pady=(0, 10))
         f_data = tk.Frame(d, bg=COLORS["bg_main"], padx=20)
         f_data.pack(fill="x")
@@ -177,7 +167,6 @@ class NoteApp(tk.Tk):
             path = filedialog.asksaveasfilename(defaultextension=".zip", filetypes=[("Zip Archive", "*.zip")])
             if not path: return
             try:
-                # Zip the DB and all WB images
                 app_dir = os.path.dirname(self.db.db_path)
                 with zipfile.ZipFile(path, 'w') as zipf:
                     zipf.write(self.db.db_path, arcname="noteapp.db")
@@ -192,18 +181,13 @@ class NoteApp(tk.Tk):
             path = filedialog.askopenfilename(filetypes=[("Zip Archive", "*.zip")])
             if not path: return
             try:
-                # 1. Close current DB connection to allow overwrite
                 self.db.conn.close()
-                
-                # 2. Extract files
                 app_dir = os.path.dirname(self.db.db_path)
                 with zipfile.ZipFile(path, 'r') as zipf:
                     zipf.extractall(app_dir)
-                
-                # 3. Re-init Database
                 self.db = DatabaseManager() 
                 show_msg(self, "Success", "Data imported! The app will now reload.")
-                self.show_projects_view() # Reload UI
+                self.show_projects_view()
                 d.destroy()
             except Exception as e:
                 show_msg(self, "Critical Error", f"Failed to import: {e}\nPlease restart app.", True)
@@ -211,20 +195,16 @@ class NoteApp(tk.Tk):
         ttk.Button(f_data, text="Export Backup (.zip)", command=export_backup).pack(side="left", padx=(0, 10))
         ttk.Button(f_data, text="Import Backup (.zip)", command=import_backup).pack(side="left")
 
-    # --- PROJECT VIEW ---
     def show_projects_view(self):
         self.clear_container()
         self.current_note_id = None
         
-        # --- Top Bar with Avatar & Settings ---
         top_bar = ttk.Frame(self.container, padding=(40, 20))
         top_bar.pack(fill="x")
         
-        # 1. Avatar Logic
         user_name = self.db.get_setting("user_name")
         initial = user_name[0].upper() if user_name else "?"
         
-        # Create a Canvas for the circular avatar
         avatar_canvas = tk.Canvas(top_bar, width=50, height=50, bg=COLORS["bg_main"], highlightthickness=0)
         avatar_canvas.pack(side="left", padx=(0, 15))
         avatar_canvas.create_oval(2, 2, 48, 48, fill=COLORS["accent"], outline="")
@@ -233,7 +213,6 @@ class NoteApp(tk.Tk):
         title_frame = ttk.Frame(top_bar)
         title_frame.pack(side="left")
         
-        # Use User Name in greeting if available
         greeting = f"Welcome, {user_name}" if user_name else "My Notebooks"
         ttk.Label(title_frame, text=greeting, style="Header.TLabel").pack(anchor="w")
         ttk.Label(title_frame, text="Manage your projects and thoughts", style="Sub.TLabel").pack(anchor="w")
@@ -241,7 +220,6 @@ class NoteApp(tk.Tk):
         ctrl_frame = ttk.Frame(top_bar)
         ctrl_frame.pack(side="right")
         
-        # --- NEW: Settings Button ---
         ttk.Button(ctrl_frame, text="⚙️ Settings", command=self.open_settings_window, style="Tool.TButton").pack(side="right", padx=10)
         
         self.proj_search_var = tk.StringVar()
@@ -250,7 +228,6 @@ class NoteApp(tk.Tk):
         e_search.pack(side="right", padx=10)
         ttk.Button(ctrl_frame, text="+ New Notebook", command=self.open_new_project_dialog).pack(side="right")
         
-        # ... (Rest of the list code remains the same as previous version) ...
         list_header = ttk.Frame(self.container, padding=(40, 10))
         list_header.pack(fill="x")
         ttk.Label(list_header, text="NOTE", font=("Segoe UI", 8, "bold"), width=35).pack(side="left")
@@ -304,22 +281,18 @@ class NoteApp(tk.Tk):
         if ask_yes_no(self, "Delete Notebook", "Are you sure? This will delete all notes and tasks inside."):
             self.db.delete_project(pid)
             self.refresh_project_list()
+
     def remove_password_dialog(self):
         if ask_yes_no(self, "Remove Lock", "Are you sure you want to remove the password protection?"):
-            # Set the password to None or empty string to remove it
             self.db.set_project_password(self.current_project, "")
             show_msg(self, "Success", "Password removed.")
-            
             self.show_projects_view()
-    # In main.py (add this method to NoteApp class)
 
     def edit_project_details_dialog(self):
-        # 1. Fetch current details from DB
         data = self.db.get_project_by_id(self.current_project)
         if not data: return
         current_name, current_desc = data
 
-        # 2. Create a popup window
         d = tk.Toplevel(self)
         d.title("Edit Notebook Details")
         d.geometry("400x250")
@@ -328,12 +301,10 @@ class NoteApp(tk.Tk):
         except: pass
         d.configure(bg=COLORS["bg_main"])
         
-        # Center the window
         x = self.winfo_x() + (self.winfo_width() // 2) - 200
         y = self.winfo_y() + (self.winfo_height() // 2) - 125
         d.geometry(f"+{x}+{y}")
 
-        # 3. UI Inputs
         tk.Label(d, text="Notebook Name:", bg=COLORS["bg_main"], font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(20, 5))
         e_name = ttk.Entry(d, width=40)
         e_name.insert(0, current_name)
@@ -344,25 +315,21 @@ class NoteApp(tk.Tk):
         e_desc.insert(0, current_desc)
         e_desc.pack(padx=20, fill="x")
 
-        # 4. Save Function
         def save_changes():
             new_name = e_name.get().strip()
             new_desc = e_desc.get().strip()
             if new_name:
                 self.db.update_project(self.current_project, new_name, new_desc)
                 d.destroy()
-                # Refresh the view to show the new name
                 self.open_project_detail(self.current_project, new_name)
             else:
                 show_msg(self, "Error", "Name cannot be empty", True)
 
-        # 5. Buttons
         btn_frame = tk.Frame(d, bg=COLORS["bg_main"], pady=20)
         btn_frame.pack(fill="x")
         ttk.Button(btn_frame, text="Save", command=save_changes).pack(side="right", padx=20)
         ttk.Button(btn_frame, text="Cancel", command=d.destroy).pack(side="right", padx=5)
 
-    # --- PROJECT DETAIL VIEW ---
     def open_project_detail(self, pid, name):
         self.clear_container()
         self.current_project = pid
@@ -372,13 +339,11 @@ class NoteApp(tk.Tk):
         header.pack(fill="x")
         ttk.Button(header, text="← Back", command=self.show_projects_view, width=8).pack(side="left", padx=(0, 20))
         ttk.Label(header, text=name, style="Header.TLabel").pack(side="left")
+        
         tools_frame = ttk.Frame(header)
         tools_frame.pack(side="right")
         
         ttk.Button(tools_frame, text="Edit Info", style="Tool.TButton", command=self.edit_project_details_dialog).pack(side="left", padx=5)
-
-        tools_frame = ttk.Frame(header)
-        tools_frame.pack(side="right")
         ttk.Button(tools_frame, text="Export PDF", style="Tool.TButton", command=self.open_export_dialog).pack(side="left", padx=5)
         
         has_pass = self.db.get_project_password(pid)
@@ -388,6 +353,7 @@ class NoteApp(tk.Tk):
         else:
             ttk.Button(tools_frame, text="Set Password", style="Tool.TButton", command=self.set_password_dialog).pack(side="left", padx=5)
         
+        # CHANGED: PanedWindow now only has TWO panes (Notes list and Tabbed Content)
         paned = tk.PanedWindow(self.container, orient=tk.HORIZONTAL, bg=COLORS["bg_sec"], sashwidth=4)
         paned.pack(fill="both", expand=True, padx=20, pady=(10, 20))
         
@@ -403,7 +369,7 @@ class NoteApp(tk.Tk):
         self.note_scroll.pack(fill="both", expand=True)
         
         pane_center = tk.Frame(paned, bg=COLORS["white"])
-        paned.add(pane_center, width=750)
+        paned.add(pane_center, width=920) # Increased width as sidebar is removed
         
         self.notebook_tabs = ttk.Notebook(pane_center)
         self.notebook_tabs.pack(fill="both", expand=True)
@@ -416,12 +382,11 @@ class NoteApp(tk.Tk):
         self.tab_whiteboard = Whiteboard(self.notebook_tabs, storage_path=app_data_path)
         self.notebook_tabs.add(self.tab_whiteboard, text=" ✏️ Notepad ")
 
-        pane_todo = tk.Frame(paned, bg=COLORS["bg_main"])
-        paned.add(pane_todo, width=170)
-        self._setup_todo_ui(pane_todo)
+        # NEW: Added TaskManager as a primary tab
+        self.tab_tasks = TaskManager(self.notebook_tabs, self.db, self.current_project)
+        self.notebook_tabs.add(self.tab_tasks, text=" ✅ Tasks ")
 
         self.refresh_notes_list()
-        self.refresh_todo_list()
 
     def _setup_editor_ui(self, parent):
         self.editor_toolbar = tk.Frame(parent, bg="#eee", pady=5, padx=5)
@@ -489,23 +454,6 @@ class NoteApp(tk.Tk):
             self.display_mode = new_mode
             for btn, short, long in self.responsive_editor_btns:
                 btn.config(text=long if new_mode == "long" else short)
-
-    def _setup_todo_ui(self, parent):
-        t_head = tk.Frame(parent, bg=COLORS["bg_sec"], pady=8, padx=10)
-        t_head.pack(fill="x")
-        tk.Label(t_head, text="Todo", font=("Segoe UI", 10, "bold"), bg=COLORS["bg_sec"]).pack(anchor="w")
-        
-        t_input = tk.Frame(parent, bg=COLORS["bg_main"], pady=5)
-        t_input.pack(fill="x")
-        
-        self.e_task = ttk.Entry(t_input)
-        self.e_task.pack(side="left", fill="x", expand=True, padx=(5,0))
-        
-        self.e_task.bind("<Return>", lambda e: self.add_task())
-        ttk.Button(t_input, text="+", width=3, command=self.add_task).pack(side="right", padx=(5,5))
-        
-        self.todo_scroll = ScrollableFrame(parent, bg_color=COLORS["bg_main"])
-        self.todo_scroll.pack(fill="both", expand=True)
 
     def insert_smart_list(self, list_type):
         try:
@@ -618,7 +566,6 @@ class NoteApp(tk.Tk):
         for nid, pid, title, ts in notes:
             item = tk.Frame(self.note_scroll.scrollable_frame, bg=COLORS["white"], bd=1, relief="solid")
             item.pack(fill="x", pady=2, padx=2)
-            def select_wrapper(e, n=nid): self.auto_save_current(); self.load_editor(n)
             f = tk.Frame(item, bg=COLORS["white"], padx=8, pady=8)
             f.pack(fill="x")
             tk.Label(f, text=title, font=("Segoe UI", 10, "bold"), bg=COLORS["white"], anchor="w").pack(fill="x")
@@ -631,10 +578,7 @@ class NoteApp(tk.Tk):
         for tag in ["bold", "italic", "heading"]:
             ranges = self.editor_text.tag_ranges(tag)
             if ranges:
-                tags_data.append({
-                    "name": tag,
-                    "ranges": [str(r) for r in ranges]
-                })
+                tags_data.append({"name": tag, "ranges": [str(r) for r in ranges]})
         return json.dumps({"text": text, "tags": tags_data})
 
     def apply_content_snapshot(self, json_str):
@@ -642,7 +586,6 @@ class NoteApp(tk.Tk):
         try:
             data = json.loads(json_str)
             self.editor_text.insert("1.0", data.get("text", ""))
-            
             for tag_info in data.get("tags", []):
                 tag_name = tag_info["name"]
                 ranges = tag_info["ranges"]
@@ -682,29 +625,15 @@ class NoteApp(tk.Tk):
     def open_export_dialog(self):
         d = tk.Toplevel(self)
         d.title("Export PDF")
-        d.geometry("300x190")      # Set fixed size
-        d.resizable(False, False)  # Disable resizing
-        d.configure(bg=COLORS["bg_main"]) # Match app theme
-        
-        # Set Icon
+        d.geometry("300x190")
+        d.resizable(False, False)
+        d.configure(bg=COLORS["bg_main"])
         try: d.iconbitmap("icon.ico")
         except: pass
-
-        # Optional: Add a small header label for better UX
-        tk.Label(d, text="Select Export Option", font=("Segoe UI", 10, "bold"), 
-                 bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=(15, 5))
-
-        # --- Three Explicit Options ---
-        ttk.Button(d, text="Current Note (Text Only)", 
-                   command=lambda: [d.destroy(), self.generate_pdf_export("current_text")]).pack(pady=5, padx=20, fill="x")
-        
-        ttk.Button(d, text="Current Note (Text + Whiteboard)", 
-                   command=lambda: [d.destroy(), self.generate_pdf_export("current_full")]).pack(pady=5, padx=20, fill="x")
-        
-        ttk.Button(d, text="Whole Notebook (Text + Whiteboard)", 
-                   command=lambda: [d.destroy(), self.generate_pdf_export("notebook_full")]).pack(pady=5, padx=20, fill="x")
-
-        # Center the dialog over the main window
+        tk.Label(d, text="Select Export Option", font=("Segoe UI", 10, "bold"), bg=COLORS["bg_main"], fg=COLORS["fg_text"]).pack(pady=(15, 5))
+        ttk.Button(d, text="Current Note (Text Only)", command=lambda: [d.destroy(), self.generate_pdf_export("current_text")]).pack(pady=5, padx=20, fill="x")
+        ttk.Button(d, text="Current Note (Text + Whiteboard)", command=lambda: [d.destroy(), self.generate_pdf_export("current_full")]).pack(pady=5, padx=20, fill="x")
+        ttk.Button(d, text="Whole Notebook (Text + Whiteboard)", command=lambda: [d.destroy(), self.generate_pdf_export("notebook_full")]).pack(pady=5, padx=20, fill="x")
         d.update_idletasks()
         x = self.winfo_x() + (self.winfo_width() // 2) - (d.winfo_width() // 2)
         y = self.winfo_y() + (self.winfo_height() // 2) - (d.winfo_height() // 2)
@@ -714,37 +643,26 @@ class NoteApp(tk.Tk):
         if not HAS_PDF: return show_msg(self, "Error", "Install 'reportlab' first.", True)
         path = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF", "*.pdf")])
         if not path: return
-        
         try:
             doc = SimpleDocTemplate(path, pagesize=letter)
             styles = getSampleStyleSheet()
             story = []
-            
-            # --- HELPER: Adds text content from a raw string (JSON or Plain) ---
             def add_note_text_to_story(raw_content, title_prefix=""):
-                # Parse JSON if needed
                 try:
                     data = json.loads(raw_content)
                     text = data.get("text", "")
-                except:
-                    text = raw_content
-                
+                except: text = raw_content
                 if title_prefix:
                     story.append(Paragraph(title_prefix, styles['Heading1']))
                     story.append(Spacer(1, 12))
-
                 for line in text.split('\n'):
                     if line.strip():
-                        # Simple styling for now (preserved headings logic could go here)
                         story.append(Paragraph(line, styles['BodyText']))
                         story.append(Spacer(1, 6))
-            
-            # --- HELPER: Adds Images ---
             def add_images_to_story(note_id):
                 app_data_path = os.path.dirname(self.db.db_path)
                 pattern = os.path.join(app_data_path, f"wb_{note_id}_*.png")
                 paths = sorted(glob.glob(pattern))
-                
                 if paths:
                     story.append(Spacer(1, 10))
                     story.append(Paragraph("Sketches:", styles['Heading3']))
@@ -753,59 +671,24 @@ class NoteApp(tk.Tk):
                             story.append(PDFImage(p, width=400, height=300))
                             story.append(Spacer(1, 10))
                         except: pass
-
-            # --- EXPORT LOGIC ---
             if mode.startswith("current"):
                 if not self.current_note_id: return show_msg(self, "Error", "No note selected!")
-                # For current note, we trust the editor's visible text
                 raw_text = self.editor_text.get("1.0", "end-1c")
-                add_note_text_to_story(raw_text) # It's already plain text from .get()
-                
+                add_note_text_to_story(raw_text)
                 if mode == "current_full":
-                    # Save current state first
                     self.tab_whiteboard.save_current_page()
                     add_images_to_story(self.current_note_id)
-
             elif mode == "notebook_full":
-                # Fetch ALL notes from DB
                 notes = self.db.get_all_notes_content(self.current_project)
                 if not notes: return show_msg(self, "Info", "Notebook is empty.")
-                
                 for nid, title, content in notes:
                     add_note_text_to_story(content, title_prefix=title)
                     add_images_to_story(nid)
                     story.append(PageBreak())
-
             doc.build(story)
             show_msg(self, "Success", "PDF Exported Successfully!")
         except Exception as e:
             show_msg(self, "Error", str(e), True)
-
-    def add_task(self):
-        t = self.e_task.get().strip()
-        if t: 
-            self.db.add_todo(self.current_project, t, "") # No date
-            self.e_task.delete(0, "end")
-            self.refresh_todo_list()
-
-    def refresh_todo_list(self):
-        for w in self.todo_scroll.scrollable_frame.winfo_children(): w.destroy()
-        todos = self.db.get_todos(self.current_project)
-        for tid, pid, task, date, is_done, _ in todos:
-            row = tk.Frame(self.todo_scroll.scrollable_frame, bg=COLORS["white"], pady=2)
-            row.pack(fill="x", pady=2)
-            var = tk.BooleanVar(value=bool(is_done))
-            def toggle(t=tid, v=var): self.db.toggle_todo(t, v.get()); self.refresh_todo_list()
-            tk.Checkbutton(row, variable=var, command=lambda: toggle(tid, var), bg=COLORS["white"], activebackground=COLORS["white"]).pack(side="left")
-            fg_col = "#aaa" if is_done else COLORS["fg_text"]
-            tk.Label(row, text=task, bg=COLORS["white"], fg=fg_col, wraplength=140, justify="left", anchor="w").pack(side="left", fill="x", expand=True)
-            btn_del = tk.Label(row, text="✕", fg="#aaa", bg=COLORS["white"], cursor="hand2")
-            btn_del.pack(side="right", padx=5)
-            btn_del.bind("<Button-1>", lambda e, t=tid: self.delete_task(t))
-
-    def delete_task(self, tid):
-        self.db.delete_todo(tid)
-        self.refresh_todo_list()
 
     def set_password_dialog(self): 
         p = ask_string(self, "Set", "Password:", show="*")
