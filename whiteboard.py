@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 import glob
+import math
 from tkinter import filedialog
 from config import COLORS
 
@@ -27,6 +28,10 @@ class Whiteboard(tk.Frame):
         self.brush_size = 3
         self.last_x, self.last_y = None, None
         
+        # Stroke tracking for shape recognition
+        self.current_stroke_points = []
+        
+        # State
         self.image = None
         self.draw = None
         self.tk_image = None
@@ -75,7 +80,6 @@ class Whiteboard(tk.Frame):
         self.bind("<Configure>", self.on_resize)
 
         if HAS_PIL:
-            # Initial object creation
             self.create_new_image_obj(width, height)
 
     def _add_responsive_btn(self, parent, short, long, command, side):
@@ -84,14 +88,12 @@ class Whiteboard(tk.Frame):
         self.responsive_btns.append((btn, short, long))
 
     def on_resize(self, event):
-        # 1. Handle Responsive Buttons
         new_mode = "long" if event.width > 600 else "short"
         if new_mode != self.display_mode:
             self.display_mode = new_mode
             for btn, short, long in self.responsive_btns:
                 btn.config(text=long if new_mode == "long" else short)
         
-        # 2. Sync Image size with Canvas size so we don't lose drawings
         if HAS_PIL and self.image:
             if event.width > self.image.width or event.height > self.image.height:
                 new_w = max(event.width, self.image.width)
@@ -119,21 +121,69 @@ class Whiteboard(tk.Frame):
 
     def start_draw(self, event):
         self.last_x, self.last_y = event.x, event.y
+        self.current_stroke_points = [(event.x, event.y)]
 
     def draw_line(self, event):
         if self.last_x and self.last_y:
+            # We tag the lines with "temp_stroke" so we can delete them if we recognize a shape
             self.canvas.create_line(self.last_x, self.last_y, event.x, event.y, 
                                   width=self.brush_size, fill=self.brush_color, 
-                                  capstyle=tk.ROUND, smooth=True)
-            if HAS_PIL and self.draw:
-                self.draw.line([self.last_x, self.last_y, event.x, event.y], 
-                             fill=self.brush_color, width=self.brush_size, joint="curve")
+                                  capstyle=tk.ROUND, smooth=True, tags="temp_stroke")
+            
+            self.current_stroke_points.append((event.x, event.y))
             self.last_x, self.last_y = event.x, event.y
 
     def stop_draw(self, event):
+        if len(self.current_stroke_points) > 10:
+            self.process_shape_recognition()
+        else:
+            # If the stroke is too short to be a shape, just commit it to Pillow
+            self.commit_stroke_to_pil(self.current_stroke_points)
+            
         self.last_x, self.last_y = None, None
-        # This triggers the automatic save to disk
+        self.current_stroke_points = []
+        self.canvas.dtag("temp_stroke", "temp_stroke") # Remove temp tag from committed lines
         self.save_current_page()
+
+    def process_shape_recognition(self):
+        pts = self.current_stroke_points
+        start_pt = pts[0]
+        end_pt = pts[-1]
+        
+        # Calculate Bounding Box
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+        width, height = max_x - min_x, max_y - min_y
+        
+        # 1. Circle/Oval Detection (Closing the loop)
+        dist_start_end = math.sqrt((start_pt[0]-end_pt[0])**2 + (start_pt[1]-end_pt[1])**2)
+        if dist_start_end < 40 and width > 30 and height > 30:
+            self.canvas.delete("temp_stroke")
+            self.canvas.create_oval(min_x, min_y, max_x, max_y, outline=self.brush_color, width=self.brush_size)
+            if HAS_PIL and self.draw:
+                self.draw.ellipse([min_x, min_y, max_x, max_y], outline=self.brush_color, width=self.brush_size)
+            return
+
+        # 2. Straight Line Detection (Directness ratio)
+        path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
+        direct_dist = math.sqrt((start_pt[0]-end_pt[0])**2 + (start_pt[1]-end_pt[1])**2)
+        
+        # If the path is less than 10% longer than a straight line, it's a line
+        if direct_dist > 0 and (path_len / direct_dist) < 1.15:
+            self.canvas.delete("temp_stroke")
+            self.canvas.create_line(start_pt[0], start_pt[1], end_pt[0], end_pt[1], fill=self.brush_color, width=self.brush_size)
+            if HAS_PIL and self.draw:
+                self.draw.line([start_pt[0], start_pt[1], end_pt[0], end_pt[1]], fill=self.brush_color, width=self.brush_size)
+            return
+
+        # 3. If no shape recognized, commit the raw points to Pillow
+        self.commit_stroke_to_pil(pts)
+
+    def commit_stroke_to_pil(self, points):
+        if HAS_PIL and self.draw and len(points) > 1:
+            for i in range(1, len(points)):
+                self.draw.line([points[i-1][0], points[i-1][1], points[i][0], points[i][1]], 
+                               fill=self.brush_color, width=self.brush_size)
 
     def clear_canvas(self):
         self.canvas.delete("all")
@@ -159,11 +209,9 @@ class Whiteboard(tk.Frame):
         self.update_ui_state()
 
     def save_current_page(self):
-        # CRITICAL: Do not save if no note is selected
         if not HAS_PIL or not self.active_note_id: return
         try:
             path = self._get_filename(self.current_page)
-            # Ensure the folder exists
             os.makedirs(os.path.dirname(path), exist_ok=True)
             self.image.save(path)
         except Exception as e:
@@ -174,7 +222,6 @@ class Whiteboard(tk.Frame):
         if not HAS_PIL or not self.active_note_id: return
         path = self._get_filename(self.current_page)
         
-        # Ensure image matches canvas size
         w = self.canvas.winfo_width() if self.canvas.winfo_width() > 1 else 1000
         h = self.canvas.winfo_height() if self.canvas.winfo_height() > 1 else 800
         
@@ -185,8 +232,7 @@ class Whiteboard(tk.Frame):
                 self.draw = ImageDraw.Draw(self.image)
                 self.tk_image = ImageTk.PhotoImage(self.image)
                 self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
-            except Exception as e:
-                print(f"Load error: {e}")
+            except:
                 self.create_new_image_obj(w, h)
         else:
             self.create_new_image_obj(w, h)
