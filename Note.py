@@ -10,7 +10,7 @@ import glob
 from config import APP_NAME, COLORS
 from database import DatabaseManager
 from whiteboard import Whiteboard
-from tasks_ui import TaskManager  # NEW: Import the separate Task Manager module
+from tasks_ui import TaskManager 
 from ui_shared import (
     ScrollableFrame, CalendarDialog, show_msg, 
     ask_yes_no, ask_string
@@ -353,7 +353,6 @@ class NoteApp(tk.Tk):
         else:
             ttk.Button(tools_frame, text="Set Password", style="Tool.TButton", command=self.set_password_dialog).pack(side="left", padx=5)
         
-        # CHANGED: PanedWindow now only has TWO panes (Notes list and Tabbed Content)
         paned = tk.PanedWindow(self.container, orient=tk.HORIZONTAL, bg=COLORS["bg_sec"], sashwidth=4)
         paned.pack(fill="both", expand=True, padx=20, pady=(10, 20))
         
@@ -369,7 +368,7 @@ class NoteApp(tk.Tk):
         self.note_scroll.pack(fill="both", expand=True)
         
         pane_center = tk.Frame(paned, bg=COLORS["white"])
-        paned.add(pane_center, width=920) # Increased width as sidebar is removed
+        paned.add(pane_center, width=920) 
         
         self.notebook_tabs = ttk.Notebook(pane_center)
         self.notebook_tabs.pack(fill="both", expand=True)
@@ -382,7 +381,6 @@ class NoteApp(tk.Tk):
         self.tab_whiteboard = Whiteboard(self.notebook_tabs, storage_path=app_data_path)
         self.notebook_tabs.add(self.tab_whiteboard, text=" ✏️ Notepad ")
 
-        # NEW: Added TaskManager as a primary tab
         self.tab_tasks = TaskManager(self.notebook_tabs, self.db, self.current_project)
         self.notebook_tabs.add(self.tab_tasks, text=" ✅ Tasks ")
 
@@ -698,9 +696,44 @@ class NoteApp(tk.Tk):
         p = ask_string(self, "Change", "New Password:", show="*")
         if p: self.db.set_project_password(self.current_project, p)
 
+    # UPDATED: Now supports both Name and Description
     def open_new_project_dialog(self):
-        p = ask_string(self, "New", "Name:")
-        if p: self.db.add_project(p, ""); self.refresh_project_list()
+        d = tk.Toplevel(self)
+        d.title("Create New Notebook")
+        d.geometry("400x250")
+        d.resizable(False, False)
+        try: d.iconbitmap("icon.ico")
+        except: pass
+        d.configure(bg=COLORS["bg_main"])
+        
+        # Center dialog
+        x = self.winfo_x() + (self.winfo_width() // 2) - 200
+        y = self.winfo_y() + (self.winfo_height() // 2) - 125
+        d.geometry(f"+{x}+{y}")
+
+        tk.Label(d, text="Notebook Name:", bg=COLORS["bg_main"], font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(20, 5))
+        e_name = ttk.Entry(d, width=40)
+        e_name.pack(padx=20, fill="x")
+        e_name.focus()
+
+        tk.Label(d, text="Description (Optional):", bg=COLORS["bg_main"], font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(15, 5))
+        e_desc = ttk.Entry(d, width=40)
+        e_desc.pack(padx=20, fill="x")
+
+        def save():
+            name = e_name.get().strip()
+            desc = e_desc.get().strip()
+            if name:
+                self.db.add_project(name, desc)
+                d.destroy()
+                self.refresh_project_list()
+            else:
+                show_msg(self, "Error", "Notebook name is required", True)
+
+        btn_frame = tk.Frame(d, bg=COLORS["bg_main"], pady=20)
+        btn_frame.pack(fill="x")
+        ttk.Button(btn_frame, text="Create", command=save).pack(side="right", padx=20)
+        ttk.Button(btn_frame, text="Cancel", command=d.destroy).pack(side="right", padx=5)
 
 if __name__ == "__main__":
     app = NoteApp()
