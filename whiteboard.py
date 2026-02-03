@@ -7,7 +7,6 @@ from tkinter import filedialog
 from PIL import Image, ImageDraw, ImageTk
 from config import COLORS
 
-# Check for PDF support
 try:
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas as pdf_canvas
@@ -16,7 +15,7 @@ except ImportError:
     HAS_PDF = False
 
 class Whiteboard(tk.Frame):
-    def __init__(self, parent, storage_path, width=1000, height=5000):
+    def __init__(self, parent, storage_path, width=2000, height=2000):
         super().__init__(parent, bg=COLORS["white"])
         self.storage_path = storage_path
         self.brush_color = "black"
@@ -25,6 +24,10 @@ class Whiteboard(tk.Frame):
         self.active_note_id = None
         self.current_stroke_points = []
         
+        # Initial dimensions
+        self.canvas_width = width
+        self.canvas_height = height
+
         # --- Toolbar ---
         self.tools = tk.Frame(self, bg="#eee", pady=5)
         self.tools.pack(side="top", fill="x")
@@ -42,42 +45,50 @@ class Whiteboard(tk.Frame):
         if HAS_PDF:
              ttk.Button(self.tools, text="💾 Export PDF", command=self.export_pdf).pack(side="right", padx=5)
 
-        # --- Scrollable Canvas System ---
-        self.canvas_frame = tk.Frame(self)
-        self.canvas_frame.pack(fill="both", expand=True)
-
-        self.v_scroll = ttk.Scrollbar(self.canvas_frame, orient="vertical")
-        self.v_scroll.pack(side="right", fill="y")
-
-        # Set a very large scrollregion for continuous drawing
-        self.canvas_height = height 
-        self.canvas = tk.Canvas(self.canvas_frame, bg="white", cursor="crosshair", 
-                                highlightthickness=0, yscrollcommand=self.v_scroll.set,
-                                scrollregion=(0, 0, width, self.canvas_height))
+        # --- Canvas Setup (No visible scrollbar) ---
+        self.canvas = tk.Canvas(self, bg="white", cursor="crosshair", 
+                                highlightthickness=0, scrollregion=(0, 0, self.canvas_width, self.canvas_height))
         self.canvas.pack(side="left", fill="both", expand=True)
-        self.v_scroll.config(command=self.canvas.yview)
 
-        # Bind Mousewheel to Scroll
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-        
+        # Bindings for drawing and scrolling
         self.canvas.bind("<Button-1>", self.start_draw)
         self.canvas.bind("<B1-Motion>", self.draw_line)
         self.canvas.bind("<ButtonRelease-1>", self.stop_draw)
-
-        # PIL State
-        self.image = Image.new("RGB", (width, self.canvas_height), "white")
+        
+        # Universal scrolling (Mousewheel anywhere on the canvas)
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        
+        # PIL Image initialization
+        self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
         self.draw = ImageDraw.Draw(self.image)
         self.tk_image = None
         
         self._draw_page_markers()
 
     def _draw_page_markers(self):
-        # Draws a small dashed line every 800px to indicate "virtual pages"
-        for y in range(800, self.canvas_height, 800):
-            self.canvas.create_line(0, y, 2000, y, fill="#eee", dash=(5, 5), tags="marker")
+        self.canvas.delete("marker")
+        for y in range(1000, self.canvas_height, 1000):
+            self.canvas.create_line(0, y, self.canvas_width, y, fill="#f0f0f0", dash=(10, 10), tags="marker")
 
     def _on_mousewheel(self, event):
+        # Scrolls the view up or down
         self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+    def _check_and_expand_canvas(self, y):
+        # If the drawing is reaching the bottom, expand the canvas and PIL image
+        if y > self.canvas_height - 200:
+            new_height = self.canvas_height + 1000
+            
+            # Expand PIL Image
+            new_img = Image.new("RGB", (self.canvas_width, new_height), "white")
+            new_img.paste(self.image, (0, 0))
+            self.image = new_img
+            self.draw = ImageDraw.Draw(self.image)
+            
+            # Update Canvas
+            self.canvas_height = new_height
+            self.canvas.config(scrollregion=(0, 0, self.canvas_width, self.canvas_height))
+            self._draw_page_markers()
 
     def set_color(self, color):
         self.brush_color = color
@@ -92,7 +103,7 @@ class Whiteboard(tk.Frame):
         self.brush_size = 20
 
     def start_draw(self, event):
-        # Convert screen y to canvas y based on scroll position
+        # Calculate actual Y coordinate relative to the scrolled board
         canvas_y = self.canvas.canvasy(event.y)
         self.last_x, self.last_y = event.x, canvas_y
         self.current_stroke_points = [(event.x, canvas_y)]
@@ -100,6 +111,8 @@ class Whiteboard(tk.Frame):
     def draw_line(self, event):
         if self.last_x and self.last_y:
             canvas_y = self.canvas.canvasy(event.y)
+            self._check_and_expand_canvas(canvas_y) # Auto-grow logic
+            
             self.canvas.create_line(self.last_x, self.last_y, event.x, canvas_y, 
                                   width=self.brush_size, fill=self.brush_color, 
                                   capstyle=tk.ROUND, smooth=True, tags="temp_stroke")
@@ -127,19 +140,25 @@ class Whiteboard(tk.Frame):
         dist_start_end = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         aspect_ratio = min(width, height) / max(width, height) if max(width, height) > 0 else 0
         
-        if dist_start_end < 50 and aspect_ratio > 0.75:
+        # Perfect Circle/Oval Logic
+        if dist_start_end < 50 and aspect_ratio > 0.70:
             self.canvas.delete("temp_stroke")
-            diameter = (width + height) / 2
-            r = diameter / 2
-            bbox = [center_x - r, center_y - r, center_x + r, center_y + r]
+            if aspect_ratio > 0.85: # Snap to perfect circle
+                diameter = (width + height) / 2
+                r = diameter / 2
+                bbox = [center_x - r, center_y - r, center_x + r, center_y + r]
+            else: # Keep as perfect oval
+                bbox = [min_x, min_y, max_x, max_y]
+            
             self.canvas.create_oval(*bbox, outline=self.brush_color, width=self.brush_size)
             self.draw.ellipse(bbox, outline=self.brush_color, width=self.brush_size)
             return
 
+        # Perfect Straight Line Logic
         path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
         direct_dist = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         
-        if direct_dist > 0 and (path_len / direct_dist) < 1.12:
+        if direct_dist > 0 and (path_len / direct_dist) < 1.15:
             self.canvas.delete("temp_stroke")
             self.canvas.create_line(pts[0][0], pts[0][1], pts[-1][0], pts[-1][1], fill=self.brush_color, width=self.brush_size)
             self.draw.line([pts[0][0], pts[0][1], pts[-1][0], pts[-1][1]], fill=self.brush_color, width=self.brush_size)
@@ -155,7 +174,7 @@ class Whiteboard(tk.Frame):
 
     def clear_canvas(self):
         self.canvas.delete("all")
-        self.image = Image.new("RGB", (self.image.width, self.canvas_height), "white")
+        self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
         self.draw = ImageDraw.Draw(self.image)
         self._draw_page_markers()
         self.save_current_page()
@@ -163,17 +182,23 @@ class Whiteboard(tk.Frame):
     def load_board(self, note_id):
         self.active_note_id = note_id
         self.canvas.delete("all")
-        self._draw_page_markers()
         
         path = os.path.join(self.storage_path, f"wb_{self.active_note_id}_continuous.png")
         if os.path.exists(path):
             try:
                 loaded_img = Image.open(path).convert("RGB")
-                self.image.paste(loaded_img, (0,0))
+                # Update current state to match loaded image size
+                self.canvas_width, self.canvas_height = loaded_img.size
+                self.image = loaded_img
                 self.draw = ImageDraw.Draw(self.image)
                 self.tk_image = ImageTk.PhotoImage(self.image)
+                self.canvas.config(scrollregion=(0, 0, self.canvas_width, self.canvas_height))
                 self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
-            except: pass
+            except: 
+                self.image = Image.new("RGB", (self.canvas_width, 2000), "white")
+                self.draw = ImageDraw.Draw(self.image)
+        
+        self._draw_page_markers()
 
     def save_current_page(self):
         if not self.active_note_id: return
@@ -186,15 +211,15 @@ class Whiteboard(tk.Frame):
         if not file_path: return
         try:
             c = pdf_canvas.Canvas(file_path, pagesize=letter)
-            # Logic to split the long image into multiple PDF pages
-            for y in range(0, self.canvas_height, 800):
-                box = (0, y, self.image.width, y + 800)
+            # Split the continuous image into standard PDF pages
+            for y in range(0, self.canvas_height, 1000):
+                box = (0, y, self.canvas_width, min(y + 1000, self.canvas_height))
                 page_img = self.image.crop(box)
-                temp_path = "temp_p.png"
+                temp_path = os.path.join(self.storage_path, "temp_export.png")
                 page_img.save(temp_path)
-                c.drawImage(temp_path, 0, 0, width=600, height=800)
+                c.drawImage(temp_path, 0, 0, width=600, height=800, preserveAspectRatio=True)
                 c.showPage()
             c.save()
-            messagebox.showinfo("Success", "Continuous Board Exported to PDF!")
+            messagebox.showinfo("Success", "PDF Exported!")
         except Exception as e:
             messagebox.showerror("Error", str(e))
