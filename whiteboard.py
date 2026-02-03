@@ -40,41 +40,44 @@ class Whiteboard(tk.Frame):
                                 scrollregion=(0, 0, self.canvas_width, self.canvas_height))
         self.canvas.pack(side="left", fill="both", expand=True)
 
+        # Draw/Scroll Bindings
         self.canvas.bind("<Button-1>", self.start_draw)
         self.canvas.bind("<B1-Motion>", self.draw_line)
         self.canvas.bind("<ButtonRelease-1>", self.stop_draw)
         
-        # Focus and Scroll bindings
+        # FIX: Explicitly bind MouseWheel to the Canvas widget itself
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         
         self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
         self.draw = ImageDraw.Draw(self.image)
         self.tk_image = None
 
     def _on_mousewheel(self, event):
-        # 1. Standard Scroll
+        # 1. Immediate scroll movement
+        # (Using delta/120 is standard for Windows)
         self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         
-        # 2. Check if we need more space based on scroll position
-        # Get the bottom-most visible Y coordinate
-        _, bottom_visible_ratio = self.canvas.yview()
+        # 2. Check position for expansion
+        # yview returns (top, bottom) of visible area from 0.0 to 1.0
+        _, v_bottom = self.canvas.yview()
         
-        # If the user has scrolled to 90% of the current board, expand it
-        if bottom_visible_ratio > 0.9:
+        if v_bottom > 0.8: # If you reach the last 20% of the current board
             self._expand_board()
 
     def _expand_board(self):
-        # Add another 2000px of height
-        new_height = self.canvas_height + 2000
+        # Add 3000px more height
+        new_height = self.canvas_height + 3000
+        
+        # Expand the underlying PIL Image
         new_img = Image.new("RGB", (self.canvas_width, new_height), "white")
         new_img.paste(self.image, (0, 0))
         self.image = new_img
         self.draw = ImageDraw.Draw(self.image)
         
+        # Update Canvas boundaries
         self.canvas_height = new_height
         self.canvas.config(scrollregion=(0, 0, self.canvas_width, self.canvas_height))
-        print(f"Board expanded to {new_height}px")
 
     def set_color(self, color):
         self.brush_color = color
@@ -88,27 +91,34 @@ class Whiteboard(tk.Frame):
         self.brush_size = 20
 
     def start_draw(self, event):
-        canvas_x = self.canvas.canvasx(event.x)
-        canvas_y = self.canvas.canvasy(event.y)
-        self.last_x, self.last_y = canvas_x, canvas_y
-        self.current_stroke_points = [(canvas_x, canvas_y)]
+        # Convert window coordinates to absolute canvas coordinates
+        cx = self.canvas.canvasx(event.x)
+        cy = self.canvas.canvasy(event.y)
+        self.last_x, self.last_y = cx, cy
+        self.current_stroke_points = [(cx, cy)]
 
     def draw_line(self, event):
         if self.last_x is not None:
-            canvas_x = self.canvas.canvasx(event.x)
-            canvas_y = self.canvas.canvasy(event.y)
+            cx = self.canvas.canvasx(event.x)
+            cy = self.canvas.canvasy(event.y)
             
-            self.canvas.create_line(self.last_x, self.last_y, canvas_x, canvas_y, 
+            # Check for expansion while drawing
+            if cy > self.canvas_height - 500:
+                self._expand_board()
+            
+            self.canvas.create_line(self.last_x, self.last_y, cx, cy, 
                                   width=self.brush_size, fill=self.brush_color, 
                                   capstyle=tk.ROUND, smooth=True, tags="temp_stroke")
-            self.current_stroke_points.append((canvas_x, canvas_y))
-            self.last_x, self.last_y = canvas_x, canvas_y
+            
+            self.current_stroke_points.append((cx, cy))
+            self.last_x, self.last_y = cx, cy
 
     def stop_draw(self, event):
         if len(self.current_stroke_points) > 10:
             self.process_shape_recognition()
         else:
             self.commit_stroke_to_pil(self.current_stroke_points)
+        
         self.last_x, self.last_y = None, None
         self.current_stroke_points = []
         self.canvas.dtag("temp_stroke", "temp_stroke")
@@ -124,6 +134,7 @@ class Whiteboard(tk.Frame):
         dist_start_end = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         aspect_ratio = min(width, height) / max(width, height) if max(width, height) > 0 else 0
         
+        # Circle Recognition
         if dist_start_end < 60 and aspect_ratio > 0.80:
             self.canvas.delete("temp_stroke")
             radius = (width + height) / 4 
@@ -132,6 +143,7 @@ class Whiteboard(tk.Frame):
             self.draw.ellipse(bbox, outline=self.brush_color, width=self.brush_size)
             return
 
+        # Straight Line Recognition
         path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
         direct_dist = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         if direct_dist > 0 and (path_len / direct_dist) < 1.10:
@@ -161,7 +173,7 @@ class Whiteboard(tk.Frame):
         if os.path.exists(path):
             try:
                 loaded_img = Image.open(path).convert("RGB")
-                # Expand image if it's smaller than the current canvas setting
+                # Expand image if it's smaller than the current canvas limit
                 self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
                 self.image.paste(loaded_img, (0,0))
                 self.draw = ImageDraw.Draw(self.image)
