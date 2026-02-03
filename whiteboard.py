@@ -17,7 +17,6 @@ class Whiteboard(tk.Frame):
         self.active_note_id = None
         self.current_stroke_points = []
         
-        # Wide dimensions to prevent left/right cropping
         self.canvas_width = width
         self.canvas_height = height
 
@@ -35,36 +34,47 @@ class Whiteboard(tk.Frame):
             tk.Button(self.colors_frame, bg=c, width=2, height=1, 
                       command=lambda col=c: self.set_color(col), relief="flat").pack(side="left", padx=1)
 
-        # --- Canvas Setup (No visible scrollbar) ---
+        # --- Canvas Setup ---
         self.canvas = tk.Canvas(self, bg="white", cursor="crosshair", 
                                 highlightthickness=0, 
                                 scrollregion=(0, 0, self.canvas_width, self.canvas_height))
         self.canvas.pack(side="left", fill="both", expand=True)
 
-        # Bindings for drawing and scrolling
         self.canvas.bind("<Button-1>", self.start_draw)
         self.canvas.bind("<B1-Motion>", self.draw_line)
         self.canvas.bind("<ButtonRelease-1>", self.stop_draw)
+        
+        # Focus and Scroll bindings
+        self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
         
-        # PIL Image initialization for saving
         self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
         self.draw = ImageDraw.Draw(self.image)
         self.tk_image = None
 
     def _on_mousewheel(self, event):
+        # 1. Standard Scroll
         self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        # 2. Check if we need more space based on scroll position
+        # Get the bottom-most visible Y coordinate
+        _, bottom_visible_ratio = self.canvas.yview()
+        
+        # If the user has scrolled to 90% of the current board, expand it
+        if bottom_visible_ratio > 0.9:
+            self._expand_board()
 
-    def _check_and_expand_canvas(self, y):
-        # Dynamically grow the board vertically as you draw
-        if y > self.canvas_height - 500:
-            new_height = self.canvas_height + 2000
-            new_img = Image.new("RGB", (self.canvas_width, new_height), "white")
-            new_img.paste(self.image, (0, 0))
-            self.image = new_img
-            self.draw = ImageDraw.Draw(self.image)
-            self.canvas_height = new_height
-            self.canvas.config(scrollregion=(0, 0, self.canvas_width, self.canvas_height))
+    def _expand_board(self):
+        # Add another 2000px of height
+        new_height = self.canvas_height + 2000
+        new_img = Image.new("RGB", (self.canvas_width, new_height), "white")
+        new_img.paste(self.image, (0, 0))
+        self.image = new_img
+        self.draw = ImageDraw.Draw(self.image)
+        
+        self.canvas_height = new_height
+        self.canvas.config(scrollregion=(0, 0, self.canvas_width, self.canvas_height))
+        print(f"Board expanded to {new_height}px")
 
     def set_color(self, color):
         self.brush_color = color
@@ -78,7 +88,6 @@ class Whiteboard(tk.Frame):
         self.brush_size = 20
 
     def start_draw(self, event):
-        # Map mouse to absolute canvas coordinates to prevent cropping
         canvas_x = self.canvas.canvasx(event.x)
         canvas_y = self.canvas.canvasy(event.y)
         self.last_x, self.last_y = canvas_x, canvas_y
@@ -88,7 +97,6 @@ class Whiteboard(tk.Frame):
         if self.last_x is not None:
             canvas_x = self.canvas.canvasx(event.x)
             canvas_y = self.canvas.canvasy(event.y)
-            self._check_and_expand_canvas(canvas_y)
             
             self.canvas.create_line(self.last_x, self.last_y, canvas_x, canvas_y, 
                                   width=self.brush_size, fill=self.brush_color, 
@@ -116,7 +124,6 @@ class Whiteboard(tk.Frame):
         dist_start_end = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         aspect_ratio = min(width, height) / max(width, height) if max(width, height) > 0 else 0
         
-        # 1. Stricter Circle Check (Forces 1:1 Aspect Ratio)
         if dist_start_end < 60 and aspect_ratio > 0.80:
             self.canvas.delete("temp_stroke")
             radius = (width + height) / 4 
@@ -125,7 +132,6 @@ class Whiteboard(tk.Frame):
             self.draw.ellipse(bbox, outline=self.brush_color, width=self.brush_size)
             return
 
-        # 2. Perfect Straight Line Check
         path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
         direct_dist = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         if direct_dist > 0 and (path_len / direct_dist) < 1.10:
@@ -155,6 +161,7 @@ class Whiteboard(tk.Frame):
         if os.path.exists(path):
             try:
                 loaded_img = Image.open(path).convert("RGB")
+                # Expand image if it's smaller than the current canvas setting
                 self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
                 self.image.paste(loaded_img, (0,0))
                 self.draw = ImageDraw.Draw(self.image)
