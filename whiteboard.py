@@ -27,7 +27,6 @@ class Whiteboard(tk.Frame):
         self.brush_size = 3
         self.last_x, self.last_y = None, None
         
-        # State
         self.image = None
         self.draw = None
         self.tk_image = None
@@ -35,36 +34,29 @@ class Whiteboard(tk.Frame):
         self.current_page = 0
         self.total_pages = 1
         
-        # Responsive Storage
-        self.responsive_btns = [] # List of (widget, short_text, long_text)
-        self.display_mode = "long" # current state
+        self.responsive_btns = []
+        self.display_mode = "long"
 
-        # --- Toolbar (Top) ---
+        # --- Toolbar ---
         self.tools = tk.Frame(self, bg="#eee", pady=5)
         self.tools.pack(side="top", fill="x")
         
-        # Left Side Tools
         self._add_responsive_btn(self.tools, "✏️", "✏️ Pen", self.use_pen, "left")
         self._add_responsive_btn(self.tools, "🧼", "🧼 Eraser", self.use_eraser, "left")
         self._add_responsive_btn(self.tools, "🗑️", "🗑️ Clear", self.clear_canvas, "left")
         
-        # Color Palette
         self.colors_frame = tk.Frame(self.tools, bg="#eee")
         self.colors_frame.pack(side="left", padx=15)
-        
         colors = ["black", "red", "blue", "green", "#FF8C00", "purple"]
         for c in colors:
             btn = tk.Button(self.colors_frame, bg=c, width=2, height=1, 
                             command=lambda col=c: self.set_color(col), relief="flat")
             btn.pack(side="left", padx=1)
 
-        # Right Side Navigation
         nav_frame = tk.Frame(self.tools, bg="#eee")
         nav_frame.pack(side="right", padx=5)
-
         self.lbl_page = tk.Label(nav_frame, text="1/1", bg="#eee", font=("Segoe UI", 9, "bold"))
         self.lbl_page.pack(side="right", padx=10)
-
         self._add_responsive_btn(nav_frame, ">", "Next >", self.next_page, "right")
         self._add_responsive_btn(nav_frame, "<", "< Prev", self.prev_page, "right")
         self._add_responsive_btn(nav_frame, "📄", "📄 New Pg", self.add_new_page, "right")
@@ -72,18 +64,18 @@ class Whiteboard(tk.Frame):
         if HAS_PDF:
              self._add_responsive_btn(nav_frame, "💾", "💾 PDF", self.export_pdf, "right")
 
-        # Canvas
-        self.canvas = tk.Canvas(self, bg="white", cursor="crosshair")
+        # --- Canvas ---
+        self.canvas = tk.Canvas(self, bg="white", cursor="crosshair", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         
         self.canvas.bind("<Button-1>", self.start_draw)
         self.canvas.bind("<B1-Motion>", self.draw_line)
         self.canvas.bind("<ButtonRelease-1>", self.stop_draw)
         
-        # Bind Resize Event
         self.bind("<Configure>", self.on_resize)
 
         if HAS_PIL:
+            # Initial object creation
             self.create_new_image_obj(width, height)
 
     def _add_responsive_btn(self, parent, short, long, command, side):
@@ -92,23 +84,27 @@ class Whiteboard(tk.Frame):
         self.responsive_btns.append((btn, short, long))
 
     def on_resize(self, event):
-        # Check current width
-        width = self.winfo_width()
-        
-        # Threshold for switching modes (approx 600px)
-        new_mode = "long" if width > 600 else "short"
-        
-        # Only update if mode changes to prevent flickering
+        # 1. Handle Responsive Buttons
+        new_mode = "long" if event.width > 600 else "short"
         if new_mode != self.display_mode:
             self.display_mode = new_mode
             for btn, short, long in self.responsive_btns:
                 btn.config(text=long if new_mode == "long" else short)
+        
+        # 2. Sync Image size with Canvas size so we don't lose drawings
+        if HAS_PIL and self.image:
+            if event.width > self.image.width or event.height > self.image.height:
+                new_w = max(event.width, self.image.width)
+                new_h = max(event.height, self.image.height)
+                new_img = Image.new("RGB", (new_w, new_h), "white")
+                new_img.paste(self.image, (0, 0))
+                self.image = new_img
+                self.draw = ImageDraw.Draw(self.image)
 
     def create_new_image_obj(self, w, h):
         self.image = Image.new("RGB", (w, h), "white")
         self.draw = ImageDraw.Draw(self.image)
 
-    # --- Drawing Logic ---
     def set_color(self, color):
         self.brush_color = color
         self.brush_size = 3
@@ -136,14 +132,16 @@ class Whiteboard(tk.Frame):
 
     def stop_draw(self, event):
         self.last_x, self.last_y = None, None
+        # This triggers the automatic save to disk
+        self.save_current_page()
 
     def clear_canvas(self):
         self.canvas.delete("all")
         if HAS_PIL:
             w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
             self.create_new_image_obj(w, h)
+        self.save_current_page()
 
-    # --- FILE I/O ---
     def _get_filename(self, page_idx):
         return os.path.join(self.storage_path, f"wb_{self.active_note_id}_{page_idx}.png")
 
@@ -161,17 +159,25 @@ class Whiteboard(tk.Frame):
         self.update_ui_state()
 
     def save_current_page(self):
+        # CRITICAL: Do not save if no note is selected
         if not HAS_PIL or not self.active_note_id: return
         try:
             path = self._get_filename(self.current_page)
+            # Ensure the folder exists
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             self.image.save(path)
         except Exception as e:
             print(f"Error saving page: {e}")
 
     def load_current_page_image(self):
-        self.clear_canvas()
+        self.canvas.delete("all")
         if not HAS_PIL or not self.active_note_id: return
         path = self._get_filename(self.current_page)
+        
+        # Ensure image matches canvas size
+        w = self.canvas.winfo_width() if self.canvas.winfo_width() > 1 else 1000
+        h = self.canvas.winfo_height() if self.canvas.winfo_height() > 1 else 800
+        
         if os.path.exists(path):
             try:
                 loaded_img = Image.open(path).convert("RGB")
@@ -179,13 +185,18 @@ class Whiteboard(tk.Frame):
                 self.draw = ImageDraw.Draw(self.image)
                 self.tk_image = ImageTk.PhotoImage(self.image)
                 self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
-            except: pass
+            except Exception as e:
+                print(f"Load error: {e}")
+                self.create_new_image_obj(w, h)
+        else:
+            self.create_new_image_obj(w, h)
 
     def add_new_page(self):
         self.save_current_page()
         self.total_pages += 1
         self.current_page = self.total_pages - 1
-        self.clear_canvas()
+        self.canvas.delete("all")
+        self.create_new_image_obj(self.canvas.winfo_width(), self.canvas.winfo_height())
         self.update_ui_state()
 
     def next_page(self):
@@ -204,15 +215,6 @@ class Whiteboard(tk.Frame):
 
     def update_ui_state(self):
         self.lbl_page.config(text=f"{self.current_page + 1}/{self.total_pages}")
-
-    def get_all_image_paths(self):
-        paths = []
-        self.save_current_page()
-        for i in range(self.total_pages):
-            p = self._get_filename(i)
-            if os.path.exists(p):
-                paths.append(p)
-        return paths
 
     def export_pdf(self):
         if not HAS_PDF: return
