@@ -12,7 +12,7 @@ class Whiteboard(tk.Frame):
         super().__init__(parent, bg=COLORS["white"])
         self.storage_path = storage_path
         self.brush_color = "black"
-        self.brush_size = 3
+        self.brush_size = 3  # Default size
         self.last_x, self.last_y = None, None
         self.active_note_id = None
         self.current_stroke_points = []
@@ -28,6 +28,14 @@ class Whiteboard(tk.Frame):
         ttk.Button(self.tools, text="🧼 Eraser", command=self.use_eraser).pack(side="left", padx=2)
         ttk.Button(self.tools, text="🗑️ Clear", command=self.clear_canvas).pack(side="left", padx=2)
         
+        # --- NEW: Size Slider ---
+        tk.Label(self.tools, text=" Size:", bg="#eee", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(10, 2))
+        self.size_slider = tk.Scale(self.tools, from_=1, to_=50, orient="horizontal", 
+                                    showvalue=False, bg="#eee", highlightthickness=0, 
+                                    command=self.update_brush_size)
+        self.size_slider.set(self.brush_size)
+        self.size_slider.pack(side="left", padx=5)
+        
         self.colors_frame = tk.Frame(self.tools, bg="#eee")
         self.colors_frame.pack(side="left", padx=15)
         for c in ["black", "red", "blue", "green", "#FF8C00", "purple"]:
@@ -40,12 +48,10 @@ class Whiteboard(tk.Frame):
                                 scrollregion=(0, 0, self.canvas_width, self.canvas_height))
         self.canvas.pack(side="left", fill="both", expand=True)
 
-        # Draw/Scroll Bindings
         self.canvas.bind("<Button-1>", self.start_draw)
         self.canvas.bind("<B1-Motion>", self.draw_line)
         self.canvas.bind("<ButtonRelease-1>", self.stop_draw)
         
-        # FIX: Explicitly bind MouseWheel to the Canvas widget itself
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
         
@@ -53,45 +59,41 @@ class Whiteboard(tk.Frame):
         self.draw = ImageDraw.Draw(self.image)
         self.tk_image = None
 
+    def update_brush_size(self, val):
+        """Updates the brush size from the slider."""
+        self.brush_size = int(val)
+
     def _on_mousewheel(self, event):
-        # 1. Immediate scroll movement
-        # (Using delta/120 is standard for Windows)
         self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        
-        # 2. Check position for expansion
-        # yview returns (top, bottom) of visible area from 0.0 to 1.0
         _, v_bottom = self.canvas.yview()
-        
-        if v_bottom > 0.8: # If you reach the last 20% of the current board
+        if v_bottom > 0.8: 
             self._expand_board()
 
     def _expand_board(self):
-        # Add 3000px more height
         new_height = self.canvas_height + 3000
-        
-        # Expand the underlying PIL Image
         new_img = Image.new("RGB", (self.canvas_width, new_height), "white")
         new_img.paste(self.image, (0, 0))
         self.image = new_img
         self.draw = ImageDraw.Draw(self.image)
-        
-        # Update Canvas boundaries
         self.canvas_height = new_height
         self.canvas.config(scrollregion=(0, 0, self.canvas_width, self.canvas_height))
 
     def set_color(self, color):
         self.brush_color = color
+        # When picking a color, ensure we aren't in "white" (eraser) mode unless requested
+        if color != "white" and self.brush_size > 15:
+            # Optionally reset size to pen-friendly size if it was an eraser
+            self.size_slider.set(3)
 
     def use_pen(self):
         self.brush_color = "black"
-        self.brush_size = 3
+        self.size_slider.set(3) # Snap to a typical pen size
 
     def use_eraser(self):
         self.brush_color = "white"
-        self.brush_size = 20
+        self.size_slider.set(20) # Snap to a larger eraser size
 
     def start_draw(self, event):
-        # Convert window coordinates to absolute canvas coordinates
         cx = self.canvas.canvasx(event.x)
         cy = self.canvas.canvasy(event.y)
         self.last_x, self.last_y = cx, cy
@@ -102,7 +104,6 @@ class Whiteboard(tk.Frame):
             cx = self.canvas.canvasx(event.x)
             cy = self.canvas.canvasy(event.y)
             
-            # Check for expansion while drawing
             if cy > self.canvas_height - 500:
                 self._expand_board()
             
@@ -114,7 +115,8 @@ class Whiteboard(tk.Frame):
             self.last_x, self.last_y = cx, cy
 
     def stop_draw(self, event):
-        if len(self.current_stroke_points) > 10:
+        # Shape recognition only triggers for pen (non-white colors)
+        if len(self.current_stroke_points) > 10 and self.brush_color != "white":
             self.process_shape_recognition()
         else:
             self.commit_stroke_to_pil(self.current_stroke_points)
@@ -134,7 +136,6 @@ class Whiteboard(tk.Frame):
         dist_start_end = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         aspect_ratio = min(width, height) / max(width, height) if max(width, height) > 0 else 0
         
-        # Circle Recognition
         if dist_start_end < 60 and aspect_ratio > 0.80:
             self.canvas.delete("temp_stroke")
             radius = (width + height) / 4 
@@ -143,7 +144,6 @@ class Whiteboard(tk.Frame):
             self.draw.ellipse(bbox, outline=self.brush_color, width=self.brush_size)
             return
 
-        # Straight Line Recognition
         path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
         direct_dist = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         if direct_dist > 0 and (path_len / direct_dist) < 1.10:
@@ -173,7 +173,6 @@ class Whiteboard(tk.Frame):
         if os.path.exists(path):
             try:
                 loaded_img = Image.open(path).convert("RGB")
-                # Expand image if it's smaller than the current canvas limit
                 self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
                 self.image.paste(loaded_img, (0,0))
                 self.draw = ImageDraw.Draw(self.image)
