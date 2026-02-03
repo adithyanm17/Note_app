@@ -737,4 +737,4 @@ class NoteApp(tk.Tk):
 
 if __name__ == "__main__":
     app = NoteApp()
-    app.mainloop()
+app.mainloop()
