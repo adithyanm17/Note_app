@@ -28,10 +28,8 @@ class Whiteboard(tk.Frame):
         self.brush_size = 3
         self.last_x, self.last_y = None, None
         
-        # Stroke tracking for shape recognition
         self.current_stroke_points = []
         
-        # State
         self.image = None
         self.draw = None
         self.tk_image = None
@@ -69,7 +67,6 @@ class Whiteboard(tk.Frame):
         if HAS_PDF:
              self._add_responsive_btn(nav_frame, "💾", "💾 PDF", self.export_pdf, "right")
 
-        # --- Canvas ---
         self.canvas = tk.Canvas(self, bg="white", cursor="crosshair", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         
@@ -125,7 +122,6 @@ class Whiteboard(tk.Frame):
 
     def draw_line(self, event):
         if self.last_x and self.last_y:
-            # We tag the lines with "temp_stroke" so we can delete them if we recognize a shape
             self.canvas.create_line(self.last_x, self.last_y, event.x, event.y, 
                                   width=self.brush_size, fill=self.brush_color, 
                                   capstyle=tk.ROUND, smooth=True, tags="temp_stroke")
@@ -137,12 +133,11 @@ class Whiteboard(tk.Frame):
         if len(self.current_stroke_points) > 10:
             self.process_shape_recognition()
         else:
-            # If the stroke is too short to be a shape, just commit it to Pillow
             self.commit_stroke_to_pil(self.current_stroke_points)
             
         self.last_x, self.last_y = None, None
         self.current_stroke_points = []
-        self.canvas.dtag("temp_stroke", "temp_stroke") # Remove temp tag from committed lines
+        self.canvas.dtag("temp_stroke", "temp_stroke")
         self.save_current_page()
 
     def process_shape_recognition(self):
@@ -150,33 +145,42 @@ class Whiteboard(tk.Frame):
         start_pt = pts[0]
         end_pt = pts[-1]
         
-        # Calculate Bounding Box
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
         min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
         width, height = max_x - min_x, max_y - min_y
+        center_x, center_y = (min_x + max_x) / 2, (min_y + max_y) / 2
         
-        # 1. Circle/Oval Detection (Closing the loop)
+        # 1. Circle Detection Logic
         dist_start_end = math.sqrt((start_pt[0]-end_pt[0])**2 + (start_pt[1]-end_pt[1])**2)
-        if dist_start_end < 40 and width > 30 and height > 30:
+        # Check if the stroke is nearly closed and roughly square-shaped
+        aspect_ratio = min(width, height) / max(width, height) if max(width, height) > 0 else 0
+        
+        if dist_start_end < 50 and aspect_ratio > 0.75:
             self.canvas.delete("temp_stroke")
-            self.canvas.create_oval(min_x, min_y, max_x, max_y, outline=self.brush_color, width=self.brush_size)
+            # Force a perfect circle by using the average of width and height as diameter
+            diameter = (width + height) / 2
+            r = diameter / 2
+            bbox = [center_x - r, center_y - r, center_x + r, center_y + r]
+            
+            self.canvas.create_oval(*bbox, outline=self.brush_color, width=self.brush_size)
             if HAS_PIL and self.draw:
-                self.draw.ellipse([min_x, min_y, max_x, max_y], outline=self.brush_color, width=self.brush_size)
+                self.draw.ellipse(bbox, outline=self.brush_color, width=self.brush_size)
             return
 
-        # 2. Straight Line Detection (Directness ratio)
+        # 2. Straight Line Detection Logic
         path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
         direct_dist = math.sqrt((start_pt[0]-end_pt[0])**2 + (start_pt[1]-end_pt[1])**2)
         
-        # If the path is less than 10% longer than a straight line, it's a line
-        if direct_dist > 0 and (path_len / direct_dist) < 1.15:
+        # Increased threshold for cleaner lines
+        if direct_dist > 0 and (path_len / direct_dist) < 1.12:
             self.canvas.delete("temp_stroke")
-            self.canvas.create_line(start_pt[0], start_pt[1], end_pt[0], end_pt[1], fill=self.brush_color, width=self.brush_size)
+            self.canvas.create_line(start_pt[0], start_pt[1], end_pt[0], end_pt[1], 
+                                    fill=self.brush_color, width=self.brush_size)
             if HAS_PIL and self.draw:
-                self.draw.line([start_pt[0], start_pt[1], end_pt[0], end_pt[1]], fill=self.brush_color, width=self.brush_size)
+                self.draw.line([start_pt[0], start_pt[1], end_pt[0], end_pt[1]], 
+                               fill=self.brush_color, width=self.brush_size)
             return
 
-        # 3. If no shape recognized, commit the raw points to Pillow
         self.commit_stroke_to_pil(pts)
 
     def commit_stroke_to_pil(self, points):
