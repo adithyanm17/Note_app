@@ -7,7 +7,7 @@ from PIL import Image, ImageDraw, ImageTk
 from config import COLORS
 
 class Whiteboard(tk.Frame):
-    def __init__(self, parent, storage_path, width=3000, height=5000):
+    def __init__(self, parent, storage_path, width=2000, height=8000): # 10 pages of 800px each
         super().__init__(parent, bg=COLORS["white"])
         self.storage_path = storage_path
         self.brush_color = "black"
@@ -50,15 +50,16 @@ class Whiteboard(tk.Frame):
             tk.Button(self.colors_frame, bg=c, width=2, height=1, 
                       command=lambda col=c: self.set_color(col), relief="flat").pack(side="left", padx=1)
 
-        # --- Canvas Setup ---
+        # --- Canvas Area ---
         self.canvas = tk.Canvas(self, bg="white", cursor="crosshair", highlightthickness=0, 
                                 scrollregion=(0, 0, self.canvas_width, self.canvas_height))
         self.canvas.pack(side="left", fill="both", expand=True)
 
+        # Bindings
         self.canvas.bind("<Button-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_motion)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
-        self.canvas.bind("<Motion>", self.update_cursor) # Hover check
+        self.canvas.bind("<Motion>", self.update_cursor) 
         
         self.canvas.bind_all("<Control-c>", lambda e: self.copy_selected())
         self.canvas.bind_all("<Control-v>", lambda e: self.paste_selected())
@@ -70,6 +71,14 @@ class Whiteboard(tk.Frame):
         self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
         self.draw = ImageDraw.Draw(self.image)
         self.tk_image = None
+        
+        self._draw_page_dividers()
+
+    def _draw_page_dividers(self):
+        # Draws a visual line every 800 pixels to indicate a "new page"
+        for y in range(800, self.canvas_height, 800):
+            self.canvas.create_line(0, y, self.canvas_width, y, fill="#ddd", dash=(5, 5), tags="divider")
+            self.canvas.create_text(50, y-20, text=f"PAGE {y//800}", fill="#aaa", font=("Segoe UI", 8))
 
     def update_brush_size(self, val):
         self.brush_size = int(val)
@@ -97,33 +106,27 @@ class Whiteboard(tk.Frame):
 
     def set_color(self, color):
         self.brush_color = color
-        if self.mode != "pen": self.use_pen()
+        if self.mode not in ["pen", "eraser"]: self.use_pen()
 
     def update_cursor(self, event):
-        """Changes cursor to move icon if hovering over the selection box."""
         if self.drag_rect:
             cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
             bbox = self.canvas.coords(self.drag_rect)
             if bbox and bbox[0] < cx < bbox[2] and bbox[1] < cy < bbox[3]:
                 self.canvas.config(cursor="fleur")
                 return
-        
-        # Reset cursor based on mode
         if self.mode == "pen": self.canvas.config(cursor="crosshair")
         elif self.mode == "eraser": self.canvas.config(cursor="dot")
         else: self.canvas.config(cursor="arrow")
 
     def on_press(self, event):
         cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-
-        # Check if we are clicking INSIDE an existing selection to move it
         if self.drag_rect:
             bbox = self.canvas.coords(self.drag_rect)
             if bbox and bbox[0] < cx < bbox[2] and bbox[1] < cy < bbox[3]:
                 self.mode = "move_active"
                 self.rect_start_x, self.rect_start_y = cx, cy
                 return
-
         if self.mode == "select":
             self.clear_selection()
             self.rect_start_x, self.rect_start_y = cx, cy
@@ -135,7 +138,6 @@ class Whiteboard(tk.Frame):
 
     def on_motion(self, event):
         cx, cy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
-
         if self.mode == "move_active" and self.selected_tags:
             dx, dy = cx - self.rect_start_x, cy - self.rect_start_y
             for tag in self.selected_tags:
@@ -151,11 +153,10 @@ class Whiteboard(tk.Frame):
                                   capstyle=tk.ROUND, smooth=True, tags=("temp_stroke", tag))
             self.current_stroke_points.append((cx, cy))
             self.last_x, self.last_y = cx, cy
-            if cy > self.canvas_height - 1000: self._expand_board()
 
     def on_release(self, event):
         if self.mode == "move_active":
-            self.mode = "select" # Switch back to select mode after moving
+            self.mode = "select"
         elif self.mode == "select":
             if self.drag_rect:
                 bbox = self.canvas.coords(self.drag_rect)
@@ -166,7 +167,7 @@ class Whiteboard(tk.Frame):
                             self.selected_tags.append(t)
         elif self.mode in ["pen", "eraser"]:
             tag = f"stroke_{self.stroke_count}"
-            if self.mode == "pen" and self.brush_color != "white" and len(self.current_stroke_points) > 10:
+            if self.mode == "pen" and self.brush_color != "white" and len(self.current_stroke_points) > 5:
                 self.process_shape_recognition(tag)
             self.canvas.dtag("temp_stroke", "temp_stroke")
         
@@ -181,21 +182,28 @@ class Whiteboard(tk.Frame):
         min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
         width, height = max_x - min_x, max_y - min_y
         center_x, center_y = (min_x + max_x) / 2, (min_y + max_y) / 2
+        
+        # Calculate Path Length vs Euclidean Distance
         dist_start_end = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
+        path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
         aspect_ratio = min(width, height) / max(width, height) if max(width, height) > 0 else 0
-        if dist_start_end < 60 and aspect_ratio > 0.80:
+        
+        # Circle Detection
+        if dist_start_end < 50 and aspect_ratio > 0.75 and len(pts) > 15:
             self.canvas.delete(tag)
             radius = (width + height) / 4 
             bbox = [center_x - radius, center_y - radius, center_x + radius, center_y + radius]
             self.canvas.create_oval(*bbox, outline=self.brush_color, width=self.brush_size, tags=tag)
             return
-        path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
-        direct_dist = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
-        if direct_dist > 0 and (path_len / direct_dist) < 1.10:
+
+        # Straight Line Detection
+        if dist_start_end > 0 and (path_len / dist_start_end) < 1.15:
             self.canvas.delete(tag)
-            self.canvas.create_line(pts[0][0], pts[0][1], pts[-1][0], pts[-1][1], fill=self.brush_color, width=self.brush_size, tags=tag)
+            self.canvas.create_line(pts[0][0], pts[0][1], pts[-1][0], pts[-1][1], 
+                                    fill=self.brush_color, width=self.brush_size, tags=tag)
 
     def rebuild_pil_image(self):
+        # We re-render the entire stack of canvas objects to the PIL image
         self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
         self.draw = ImageDraw.Draw(self.image)
         for item in self.canvas.find_all():
@@ -204,8 +212,11 @@ class Whiteboard(tk.Frame):
                 itype, coords = self.canvas.type(item), self.canvas.coords(item)
                 color = self.canvas.itemcget(item, "fill") or self.canvas.itemcget(item, "outline")
                 width = int(float(self.canvas.itemcget(item, "width")))
-                if itype == "line": self.draw.line(coords, fill=color, width=width)
-                elif itype == "oval": self.draw.ellipse(coords, outline=color, width=width)
+                if itype == "line":
+                    if len(coords) >= 4:
+                        self.draw.line(coords, fill=color, width=width, joint="curve")
+                elif itype == "oval":
+                    self.draw.ellipse(coords, outline=color, width=width)
 
     def copy_selected(self):
         if self.selected_tags:
@@ -236,6 +247,7 @@ class Whiteboard(tk.Frame):
                                                tags=new_tag, capstyle=tk.ROUND, smooth=True)
                     elif p['type'] == "oval":
                         self.canvas.create_oval(new_coords, outline=p['color'], width=p['width'], tags=new_tag)
+            self.selected_tags = new_selection
             self.rebuild_pil_image()
             self.save_current_page()
 
@@ -248,35 +260,23 @@ class Whiteboard(tk.Frame):
 
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        _, v_bottom = self.canvas.yview()
-        if v_bottom > 0.85: self._expand_board()
-
-    def _expand_board(self):
-        new_height = self.canvas_height + 3000
-        new_img = Image.new("RGB", (self.canvas_width, new_height), "white")
-        new_img.paste(self.image, (0, 0))
-        self.image, self.draw = new_img, ImageDraw.Draw(new_img)
-        self.canvas_height = new_height
-        self.canvas.config(scrollregion=(0, 0, self.canvas_width, self.canvas_height))
 
     def clear_canvas(self):
         if messagebox.askyesno("Clear", "Clear entire whiteboard?"):
             self.canvas.delete("all")
             self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
             self.draw = ImageDraw.Draw(self.image)
+            self._draw_page_dividers()
             self.save_current_page()
 
     def load_board(self, note_id):
         self.active_note_id = note_id
         self.canvas.delete("all")
+        self._draw_page_dividers()
         path = os.path.join(self.storage_path, f"wb_{self.active_note_id}_continuous.png")
         if os.path.exists(path):
             try:
                 loaded_img = Image.open(path).convert("RGB")
-                if loaded_img.height > self.canvas_height:
-                    self.canvas_height = loaded_img.height
-                    self.canvas.config(scrollregion=(0, 0, self.canvas_width, self.canvas_height))
-                self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
                 self.image.paste(loaded_img, (0,0))
                 self.draw = ImageDraw.Draw(self.image)
                 self.tk_image = ImageTk.PhotoImage(self.image)
