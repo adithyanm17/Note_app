@@ -57,25 +57,26 @@ class Whiteboard(tk.Frame):
                                 scrollregion=(0, 0, self.canvas_width, self.canvas_height))
         self.canvas.pack(side="left", fill="both", expand=True)
 
-        # Bindings
+        # Event Bindings
         self.canvas.bind("<Button-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_motion)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         
-        # Shortcuts
+        # Shortcuts for Copy/Paste/Delete
         self.canvas.bind_all("<Control-c>", lambda e: self.copy_selected())
         self.canvas.bind_all("<Control-v>", lambda e: self.paste_selected())
         self.canvas.bind_all("<Delete>", lambda e: self.delete_selected())
         
-        # Scroll & Focus
+        # Scrolling and Focus
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
         
-        # PIL State
+        # PIL Image for persistence
         self.image = Image.new("RGB", (self.canvas_width, self.canvas_height), "white")
         self.draw = ImageDraw.Draw(self.image)
         self.tk_image = None
 
+    # --- Mode Management ---
     def update_brush_size(self, val):
         self.brush_size = int(val)
 
@@ -85,6 +86,7 @@ class Whiteboard(tk.Frame):
 
     def use_eraser(self):
         self.mode = "eraser"
+        self.brush_color = "white"
         self.canvas.config(cursor="dot")
 
     def use_select(self):
@@ -124,7 +126,8 @@ class Whiteboard(tk.Frame):
             dx, dy = cx - self.rect_start_x, cy - self.rect_start_y
             for tag in self.selected_tags:
                 self.canvas.move(tag, dx, dy)
-            if self.drag_rect: self.canvas.move(self.drag_rect, dx, dy)
+            if self.drag_rect:
+                self.canvas.move(self.drag_rect, dx, dy)
             self.rect_start_x, self.rect_start_y = cx, cy
         elif self.mode in ["pen", "eraser"]:
             tag = f"stroke_{self.stroke_count}"
@@ -156,24 +159,66 @@ class Whiteboard(tk.Frame):
         self.current_stroke_points = []
         self.save_current_page()
 
-    # --- Shape, Move, Sync ---
+    # --- Copy, Paste, Delete ---
+    def copy_selected(self):
+        if self.selected_tags:
+            self.clipboard_data = []
+            for tag in self.selected_tags:
+                tag_items = []
+                for item in self.canvas.find_withtag(tag):
+                    tag_items.append({
+                        'type': self.canvas.type(item),
+                        'coords': self.canvas.coords(item),
+                        'color': self.canvas.itemcget(item, "fill") or self.canvas.itemcget(item, "outline"),
+                        'width': self.canvas.itemcget(item, "width")
+                    })
+                self.clipboard_data.append(tag_items)
+            messagebox.showinfo("Clipboard", f"Copied {len(self.selected_tags)} items")
+
+    def paste_selected(self):
+        if self.clipboard_data:
+            offset = 50
+            new_selection = []
+            for tag_items in self.clipboard_data:
+                self.stroke_count += 1
+                new_tag = f"stroke_{self.stroke_count}"
+                new_selection.append(new_tag)
+                for props in tag_items:
+                    new_coords = [c + offset for c in props['coords']]
+                    if props['type'] == "line":
+                        self.canvas.create_line(new_coords, fill=props['color'], width=props['width'], 
+                                               tags=new_tag, capstyle=tk.ROUND, smooth=True)
+                    elif props['type'] == "oval":
+                        self.canvas.create_oval(new_coords, outline=props['color'], width=props['width'], tags=new_tag)
+            
+            # Select the newly pasted items automatically
+            self.selected_tags = new_selection
+            self.rebuild_pil_image()
+            self.save_current_page()
+
+    def delete_selected(self):
+        if self.selected_tags:
+            for tag in self.selected_tags: self.canvas.delete(tag)
+            if self.drag_rect: self.canvas.delete(self.drag_rect)
+            self.selected_tags, self.drag_rect = [], None
+            self.rebuild_pil_image()
+            self.save_current_page()
+
+    # --- Shape, Expansion, Logic ---
     def process_shape_recognition(self, tag):
         pts = self.current_stroke_points
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
         min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
         width, height = max_x - min_x, max_y - min_y
         center_x, center_y = (min_x + max_x) / 2, (min_y + max_y) / 2
-        
         dist_start_end = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         aspect_ratio = min(width, height) / max(width, height) if max(width, height) > 0 else 0
-        
         if dist_start_end < 60 and aspect_ratio > 0.80:
             self.canvas.delete(tag)
             radius = (width + height) / 4 
             bbox = [center_x - radius, center_y - radius, center_x + radius, center_y + radius]
             self.canvas.create_oval(*bbox, outline=self.brush_color, width=self.brush_size, tags=tag)
             return
-
         path_len = sum(math.sqrt((pts[i][0]-pts[i-1][0])**2 + (pts[i][1]-pts[i-1][1])**2) for i in range(1, len(pts)))
         direct_dist = math.sqrt((pts[0][0]-pts[-1][0])**2 + (pts[0][1]-pts[-1][1])**2)
         if direct_dist > 0 and (path_len / direct_dist) < 1.10:
@@ -193,47 +238,6 @@ class Whiteboard(tk.Frame):
                 if itype == "line": self.draw.line(coords, fill=color, width=width)
                 elif itype == "oval": self.draw.ellipse(coords, outline=color, width=width)
 
-    # --- Copy, Paste, Delete ---
-    def copy_selected(self):
-        if self.mode in ["select", "move"] and self.selected_tags:
-            self.clipboard_data = []
-            for tag in self.selected_tags:
-                tag_items = []
-                for item in self.canvas.find_withtag(tag):
-                    tag_items.append({
-                        'type': self.canvas.type(item),
-                        'coords': self.canvas.coords(item),
-                        'color': self.canvas.itemcget(item, "fill") or self.canvas.itemcget(item, "outline"),
-                        'width': self.canvas.itemcget(item, "width")
-                    })
-                self.clipboard_data.append(tag_items)
-            messagebox.showinfo("Clipboard", f"Copied {len(self.selected_tags)} items")
-
-    def paste_selected(self):
-        if self.clipboard_data:
-            offset = 50
-            for tag_items in self.clipboard_data:
-                self.stroke_count += 1
-                new_tag = f"stroke_{self.stroke_count}"
-                for props in tag_items:
-                    new_coords = [c + offset for c in props['coords']]
-                    if props['type'] == "line":
-                        self.canvas.create_line(new_coords, fill=props['color'], width=props['width'], 
-                                               tags=new_tag, capstyle=tk.ROUND, smooth=True)
-                    elif props['type'] == "oval":
-                        self.canvas.create_oval(new_coords, outline=props['color'], width=props['width'], tags=new_tag)
-            self.rebuild_pil_image()
-            self.save_current_page()
-
-    def delete_selected(self):
-        if self.selected_tags:
-            for tag in self.selected_tags: self.canvas.delete(tag)
-            if self.drag_rect: self.canvas.delete(self.drag_rect)
-            self.selected_tags, self.drag_rect = [], None
-            self.rebuild_pil_image()
-            self.save_current_page()
-
-    # --- Navigation & IO ---
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         _, v_bottom = self.canvas.yview()
