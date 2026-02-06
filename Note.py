@@ -5,6 +5,7 @@ import re
 import shutil
 import zipfile
 import os
+from file_converter import FileConverterWindow
 import json
 import glob
 from config import APP_NAME, COLORS
@@ -219,7 +220,8 @@ class NoteApp(tk.Tk):
         
         ctrl_frame = ttk.Frame(top_bar)
         ctrl_frame.pack(side="right")
-        
+        ttk.Button(ctrl_frame, text="🔄 Convert Files", 
+           command=lambda: FileConverterWindow(self)).pack(side="right", padx=10)
         ttk.Button(ctrl_frame, text="⚙️ Settings", command=self.open_settings_window, style="Tool.TButton").pack(side="right", padx=10)
         
         self.proj_search_var = tk.StringVar()
