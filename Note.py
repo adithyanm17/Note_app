@@ -220,9 +220,9 @@ class NoteApp(tk.Tk):
         
         ctrl_frame = ttk.Frame(top_bar)
         ctrl_frame.pack(side="right")
-        ttk.Button(ctrl_frame, text="🔄 Convert Files", 
+        ttk.Button(ctrl_frame, text="Convert Files", 
            command=lambda: FileConverterWindow(self)).pack(side="right", padx=10)
-        ttk.Button(ctrl_frame, text="⚙️ Settings", command=self.open_settings_window, style="Tool.TButton").pack(side="right", padx=10)
+        ttk.Button(ctrl_frame, text="Settings", command=self.open_settings_window, style="Tool.TButton").pack(side="right", padx=10)
         
         self.proj_search_var = tk.StringVar()
         self.proj_search_var.trace("w", lambda n,i,m: self.refresh_project_list())
