@@ -18,7 +18,10 @@ class FileConverterWindow(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Universal File Tools")
-        self.geometry("850x750")
+        self.geometry("800x600")
+        try: self.iconbitmap("icon.ico")
+        except: pass
+        self.resizable(False, False)
         self.configure(bg=COLORS["bg_main"])
         
         self.conv_file = None
