@@ -169,11 +169,23 @@ class FileConverterWindow(tk.Toplevel):
 
     def _gen_barcode(self):
         data = self.e_code_data.get()
+        if not data:
+            return show_msg(self, "Error", "Please enter data for the barcode", True)
+            
         out_path = filedialog.asksaveasfilename(defaultextension=".png")
         if out_path:
-            # barcode library adds extension automatically, we strip it for the call
-            clean_path = out_path.replace(".png", "")
-            code_class = barcode.get_by_name('code128')
-            it = code_class(data, writer=ImageWriter())
-            it.save(clean_path)
-            show_msg(self, "Success", "Barcode Generated!")
+            try:
+                # Strip the .png for the library as it adds it automatically
+                clean_path = out_path.replace(".png", "")
+                
+                # Using the helper specifically from the barcode module
+                import barcode
+                from barcode.writer import ImageWriter
+                
+                # Use 'get' instead of 'get_by_name' if the attribute error persists
+                CODICE = barcode.get('code128', data, writer=ImageWriter())
+                CODICE.save(clean_path)
+                
+                show_msg(self, "Success", "Barcode Generated!")
+            except Exception as e:
+                show_msg(self, "Error", f"Barcode failed: {str(e)}", True)
